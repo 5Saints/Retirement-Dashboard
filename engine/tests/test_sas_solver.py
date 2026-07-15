@@ -33,8 +33,10 @@ def test_sas_at_woa_exceeds_the_300k_anchor():
     """Retiring at the solved WOA (later than 2032) leaves a shorter retirement
     horizon and more accumulation, so sustainable spending there should comfortably
     clear the $300,000 anchor -- consistent with WOA being defined as the date the
-    anchor-based tests actually pass."""
+    anchor-based tests actually pass. Monte Carlo disabled for speed -- this is
+    testing the SAS solver, not Phase 4."""
     scenario = build_baseline_scenario()
+    scenario.monte_carlo_enabled = False
     woa = solve_woa(scenario)
 
     result = solve_sas(scenario, woa.candidate_date)

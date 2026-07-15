@@ -1,11 +1,12 @@
 """Scenario/decision comparison (PRD Section 8.2 Decision Output).
 
-`compare_scenarios` runs each scenario's own WOA/SAS solve (Phase 2) and reports the
-Section 8.2 output fields that are computable without Monte Carlo: WOA impact, SAS
-impact, liquidity impact, legacy impact at ages 75/85/95, tax impact, and risk impact.
-"Success probability: before and after" is the one field Section 8.2 requires that this
-phase cannot produce -- it needs the Phase 4 Monte Carlo engine -- so it is reported as
-`None` with `status=Status.PLACEHOLDER` rather than silently omitted or faked.
+`compare_scenarios` runs each scenario's own WOA/SAS solve (Phase 2) and Monte Carlo
+simulation (Phase 4) and reports the full Section 8.2 output: WOA impact, SAS impact,
+success probability before/after, liquidity impact, legacy impact at ages 75/85/95, tax
+impact, and risk impact. `status` reflects whether Monte Carlo actually ran on both
+sides (`Status.CONFIRMED`) or was skipped via `Scenario.monte_carlo_enabled=False` on
+either scenario (`Status.PLACEHOLDER`, success-probability fields `None`) -- the fast
+deterministic-only path most tests use.
 """
 
 from __future__ import annotations
@@ -16,6 +17,7 @@ from decimal import Decimal
 
 from .dashboard import compute_dashboard_summary
 from .models import Scenario, Status
+from .monte_carlo import run_monte_carlo
 from .projection import ProjectionOutput, add_months, run_projection
 from .retirement_tests import LIQUID_CLASSES, essential_fraction
 from .sas_solver import solve_sas
@@ -28,6 +30,7 @@ class MetricSnapshot:
     evaluated_at: date | None
     sas: Decimal | None
     freedom_margin: Decimal | None
+    success_probability: float | None
     min_liquid_balance: Decimal | None
     liquid_years_of_core_coverage_at_retirement: Decimal | None
     legacy_at_75: Decimal | None
@@ -48,9 +51,9 @@ class ScenarioComparison:
     legacy_impact: dict[int, Decimal | None]
     tax_impact: Decimal | None
     risk_impact: Decimal | None
-    success_probability_before: None
-    success_probability_after: None
-    status: Status = Status.PLACEHOLDER
+    success_probability_before: float | None
+    success_probability_after: float | None
+    status: Status = Status.CONFIRMED
 
 
 def _age_date(scenario: Scenario, age: int) -> date:
@@ -87,11 +90,19 @@ def snapshot(scenario: Scenario, retirement_date: date | None = None) -> MetricS
         retirement_date = summary.fid if summary.fid is not None else scenario.household.retirement_date
         sas_value = summary.sas.sustainable_spending if summary.sas is not None else None
         freedom_margin = summary.freedom_margin
+        success_probability = summary.success_probability
     else:
         sas_result = solve_sas(scenario, retirement_date)
         sas_value = sas_result.sustainable_spending if sas_result.bounded else None
-        desired = first_year_spending(retirement_date.year, scenario.retirement_inflation_rate)
+        desired = first_year_spending(
+            scenario.household.expense_categories, retirement_date.year, scenario.retirement_inflation_rate
+        )
         freedom_margin = sas_value - desired if sas_value is not None else None
+        success_probability = (
+            run_monte_carlo(scenario, retirement_date, terminal_age=scenario.terminal_age).success_probability
+            if scenario.monte_carlo_enabled
+            else None
+        )
 
     projection = run_projection(scenario, terminal_age=scenario.terminal_age, retirement_date=retirement_date)
 
@@ -144,6 +155,7 @@ def snapshot(scenario: Scenario, retirement_date: date | None = None) -> MetricS
         evaluated_at=retirement_date,
         sas=sas_value,
         freedom_margin=freedom_margin,
+        success_probability=success_probability,
         min_liquid_balance=min_liquid,
         liquid_years_of_core_coverage_at_retirement=coverage_years,
         legacy_at_75=_net_worth_at_age(projection, scenario, 75),
@@ -216,6 +228,11 @@ def compare_scenarios(
         else None
     )
 
+    status = (
+        Status.CONFIRMED
+        if baseline.monte_carlo_enabled and alternative.monte_carlo_enabled
+        else Status.PLACEHOLDER
+    )
     return ScenarioComparison(
         baseline=baseline_snapshot,
         alternative=alternative_snapshot,
@@ -226,8 +243,9 @@ def compare_scenarios(
         legacy_impact=legacy_impact,
         tax_impact=tax_impact,
         risk_impact=risk_impact,
-        success_probability_before=None,
-        success_probability_after=None,
+        success_probability_before=baseline_snapshot.success_probability,
+        success_probability_after=alternative_snapshot.success_probability,
+        status=status,
     )
 
 
@@ -254,4 +272,10 @@ def what_changed(comparison: ScenarioComparison, alternative: Scenario) -> list[
     if comparison.alternative.freedom_margin is not None and comparison.baseline.freedom_margin is not None:
         fm_delta = comparison.alternative.freedom_margin - comparison.baseline.freedom_margin
         lines.append(f"Freedom Margin changes by {fm_delta}")
+    if comparison.success_probability_before is not None and comparison.success_probability_after is not None:
+        delta = comparison.success_probability_after - comparison.success_probability_before
+        lines.append(
+            f"Success probability moves from {comparison.success_probability_before:.1%} "
+            f"to {comparison.success_probability_after:.1%} ({delta:+.1%})"
+        )
     return lines

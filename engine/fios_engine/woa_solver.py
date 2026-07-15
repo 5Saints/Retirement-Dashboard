@@ -13,11 +13,15 @@ if all enabled tests pass at candidate date D, they pass at every later date. Se
 tests/test_monotonicity.py for the property-based test the PRD requires against that
 invariant.
 
-Steps 3-4 require Monte Carlo simulation, which is Phase 4 (see docs/delivery-plan.md).
-This solver implements steps 1-2 against the deterministic test suite (Section 6.1),
-including the deterministic stress-test proxy (`retirement_tests.stress_test`), and
-reports the result with `monte_carlo_verified=False` -- an explicit, visible flag
-rather than a silent assumption that verification happened.
+Steps 3-4 (Phase 4) run Monte Carlo only once the earliest deterministic-passing
+candidate is found: running 10,000 simulations at every coarse-scan/bisection candidate
+would defeat Section 6.3's own performance target, so the (cheap) deterministic suite
+does all of the bracketing and only the final candidate -- and any monthly step-forward
+retries -- pay the Monte Carlo cost. `Scenario.monte_carlo_enabled=False` skips steps
+3-4 entirely for callers that want a fast deterministic-only solve (most tests), in
+which case `monte_carlo_verified` stays `False` and `status` stays `Status.PLACEHOLDER`,
+same as Phase 2 -- an explicit, visible flag rather than a silent assumption that
+verification happened.
 """
 
 from __future__ import annotations
@@ -26,6 +30,7 @@ from dataclasses import dataclass
 from datetime import date
 
 from .models import Scenario, Status
+from .monte_carlo import DEFAULT_SEED, DEFAULT_SIMULATIONS, MonteCarloResult, run_monte_carlo
 from .projection import add_months, run_projection
 from .retirement_tests import RetirementTestSuite, evaluate_all_tests
 from .spending import build_schedule
@@ -48,6 +53,7 @@ class WOAResult:
     tests: RetirementTestSuite | None
     monte_carlo_verified: bool
     trace: list[WOACandidate]
+    monte_carlo_result: MonteCarloResult | None = None
     not_achievable_reason: str | None = None
     status: Status = Status.CONFIRMED
 
@@ -67,14 +73,20 @@ def _evaluate_candidate(scenario: Scenario, candidate_date: date) -> WOACandidat
     projection = run_projection(
         scenario, terminal_age=scenario.terminal_age, retirement_date=candidate_date
     )
-    schedule = build_schedule(candidate_date.year, scenario.retirement_inflation_rate)
+    schedule = build_schedule(
+        scenario.household.expense_categories, candidate_date.year, scenario.retirement_inflation_rate
+    )
     tests = evaluate_all_tests(
         scenario, projection, candidate_date, scenario.terminal_age, schedule.first_year_total
     )
     return WOACandidate(candidate_date, tests)
 
 
-def solve_woa(scenario: Scenario) -> WOAResult:
+def solve_woa(
+    scenario: Scenario,
+    num_mc_simulations: int = DEFAULT_SIMULATIONS,
+    mc_seed: int = DEFAULT_SEED,
+) -> WOAResult:
     household = scenario.household
     earliest_candidate = household.current_date
     last_candidate = _last_search_date(scenario)
@@ -144,12 +156,69 @@ def solve_woa(scenario: Scenario) -> WOAResult:
         final = _evaluate_candidate(scenario, earliest_passing_date)
         trace.append(final)
 
-    # 3-4. Monte Carlo verification: Phase 4, not yet implemented (see module docstring).
-    return WOAResult(
-        achievable=True,
-        candidate_date=final.candidate_date,
-        tests=final.tests,
-        monte_carlo_verified=False,
-        trace=trace,
-        status=Status.PLACEHOLDER,
-    )
+    if not scenario.monte_carlo_enabled:
+        return WOAResult(
+            achievable=True,
+            candidate_date=final.candidate_date,
+            tests=final.tests,
+            monte_carlo_verified=False,
+            trace=trace,
+            status=Status.PLACEHOLDER,
+        )
+
+    # 3-4. Monte Carlo verification at the earliest deterministic pass; on failure,
+    # step forward monthly (re-verifying deterministic tests too, per the monotonicity
+    # invariant) until Monte Carlo passes or the search boundary is reached.
+    candidate = final
+    while True:
+        mc_result = run_monte_carlo(
+            scenario,
+            candidate.candidate_date,
+            terminal_age=scenario.terminal_age,
+            num_simulations=num_mc_simulations,
+            seed=mc_seed,
+        )
+        if mc_result.success_probability >= float(scenario.success_threshold):
+            return WOAResult(
+                achievable=True,
+                candidate_date=candidate.candidate_date,
+                tests=candidate.tests,
+                monte_carlo_verified=True,
+                trace=trace,
+                monte_carlo_result=mc_result,
+            )
+
+        next_date = add_months(candidate.candidate_date, 1)
+        if next_date > last_candidate:
+            return WOAResult(
+                achievable=False,
+                candidate_date=None,
+                tests=None,
+                monte_carlo_verified=False,
+                trace=trace,
+                monte_carlo_result=mc_result,
+                not_achievable_reason=(
+                    f"deterministic tests pass from {final.candidate_date}, but Monte Carlo "
+                    f"success probability ({mc_result.success_probability:.1%}) never reaches "
+                    f"the {float(scenario.success_threshold):.1%} threshold by {last_candidate}"
+                ),
+            )
+        candidate = _evaluate_candidate(scenario, next_date)
+        trace.append(candidate)
+        if not candidate.passed:
+            failure = candidate.tests.first_failure()
+            return WOAResult(
+                achievable=False,
+                candidate_date=None,
+                tests=None,
+                monte_carlo_verified=False,
+                trace=trace,
+                monte_carlo_result=mc_result,
+                not_achievable_reason=(
+                    f"deterministic test {failure.name} unexpectedly failed at {next_date} while "
+                    "stepping forward for Monte Carlo verification -- monotonicity invariant "
+                    "violated (see tests/test_monotonicity.py)"
+                    if failure is not None
+                    else f"deterministic tests unexpectedly failed at {next_date}"
+                ),
+            )

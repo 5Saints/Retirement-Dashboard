@@ -99,10 +99,11 @@ def test_2028_candidate_prices_from_2028_anchor():
 def test_retirement_spending_anchor_values():
     from fios_engine.spending import first_year_spending
 
+    categories = build_baseline_household().expense_categories
     inflation = Decimal("0.03")
-    assert to_dollars(first_year_spending(2031, inflation)) == Decimal("291262")
-    assert to_dollars(first_year_spending(2032, inflation)) == Decimal("300000")
-    assert to_dollars(first_year_spending(2033, inflation)) == Decimal("309000")
+    assert to_dollars(first_year_spending(categories, 2031, inflation)) == Decimal("291262")
+    assert to_dollars(first_year_spending(categories, 2032, inflation)) == Decimal("300000")
+    assert to_dollars(first_year_spending(categories, 2033, inflation)) == Decimal("309000")
 
 
 def test_liabilities_zero_at_retirement_date():

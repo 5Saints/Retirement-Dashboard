@@ -1,9 +1,14 @@
 [project]
 name = "fios-engine"
 version = "0.1.0"
-description = "FIOS deterministic financial-planning calculation engine (Phase 3: scenario engine)"
+description = "FIOS financial-planning calculation engine (Phase 4: Monte Carlo)"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = [
+    # Monte Carlo only (Section 9) -- a deliberate, scoped exception to the engine's
+    # Decimal-only rule (Section 11); see fios_engine/monte_carlo.py's module
+    # docstring. The deterministic engine has no dependencies and stays pure Decimal.
+    "numpy>=1.26",
+]
 
 [project.optional-dependencies]
 dev = ["pytest>=7.4", "hypothesis>=6.100"]

@@ -61,7 +61,10 @@ def solve_sas(
 
     lo = Decimal("0")
     hi = max(
-        first_year_spending(retirement_date.year, scenario.retirement_inflation_rate) * 4,
+        first_year_spending(
+            scenario.household.expense_categories, retirement_date.year, scenario.retirement_inflation_rate
+        )
+        * 4,
         Decimal("1000000"),
     )
 

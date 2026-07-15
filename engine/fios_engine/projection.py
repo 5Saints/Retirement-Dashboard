@@ -143,14 +143,16 @@ def run_projection(
     spending_schedule: SpendingSchedule | None = None,
     return_haircut: Decimal = Decimal("0"),
 ) -> ProjectionOutput:
-    """`retirement_date`, `spending_schedule`, and `return_haircut` let the Phase 2
-    solvers (woa_solver.py, sas_solver.py) evaluate a candidate retirement date or
-    candidate spending level without mutating the household's own planned retirement
-    date or the Section 4.9 anchored spending schedule. `return_haircut` is the Section
-    6.1 deterministic stress-test proxy (see models.Scenario.stress_return_haircut);
-    it is subtracted, floored at zero, from every non-cash account's return for the
-    whole horizon, since the engine does not yet model separate pre/post-retirement
-    return regimes (Section 7.3 -- that split is deferred, see delivery-plan.md)."""
+    """`retirement_date` and `spending_schedule` let the Phase 2 solvers (woa_solver.py,
+    sas_solver.py) and the Phase 3 comparison engine evaluate a candidate retirement
+    date or candidate spending level without mutating the household's own planned
+    retirement date or the Section 4.9 anchored spending schedule. `return_haircut` is
+    the Section 6.1 stress-test mechanism (see models.Scenario.stress_return_haircut
+    and retirement_tests.stress_test for why it is relative to the scenario's own
+    return rather than an absolute floor); it is subtracted, floored at zero, from
+    every non-cash account's return for the whole horizon, since the engine does not
+    yet model separate pre/post-retirement return regimes (Section 7.3 -- deferred,
+    see delivery-plan.md)."""
     household = scenario.household
     retirement_date = retirement_date if retirement_date is not None else household.retirement_date
     horizon_age = terminal_age if terminal_age is not None else household.retirement_horizon_age
@@ -179,7 +181,11 @@ def run_projection(
         )
 
     monthly_rates = {
-        name: max(acc.annual_return.value - (return_haircut if acc.tax_treatment != "cash" else Decimal("0")), Decimal("0")) / 12
+        name: max(
+            acc.annual_return.value - (return_haircut if acc.tax_treatment != "cash" else Decimal("0")),
+            Decimal("0"),
+        )
+        / 12
         for name, acc in household.accounts.items()
     }
     balances = {name: acc.opening_balance for name, acc in household.accounts.items()}
@@ -203,7 +209,9 @@ def run_projection(
     bonus_stream = next(s for s in household.income_streams if s.name == "Annual bonus")
 
     if spending_schedule is None:
-        spending_schedule = build_schedule(retirement_date.year, scenario.retirement_inflation_rate)
+        spending_schedule = build_schedule(
+            household.expense_categories, retirement_date.year, scenario.retirement_inflation_rate
+        )
 
     periods: list[PeriodResult] = []
     month_index = 0

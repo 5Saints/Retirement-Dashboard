@@ -284,13 +284,24 @@ class Scenario:
     and the `scenario_library` builders did to produce this scenario from its parent.
     The baseline scenario has `parent_name=None` and an empty `changes` list.
 
-    The threshold fields below are the Section 6.2 WOA defaults. `stress_return_haircut`
-    is the Phase 2 deterministic stand-in for the Section 8.1 "Conservative returns"
-    built-in scenario: Section 7.3 gives 6% nominal as the default post-retirement
-    balanced return with "stress cases at 4% and 8%", so 0.02 reproduces the 4% stress
-    case as a flat haircut off every invested account's return. Phase 3's
-    `scenario_library.conservative_returns` builds the real thing; the Monte Carlo
-    Success Threshold gate (Section 9) is still Phase 4; see docs/delivery-plan.md.
+    The threshold fields below are the Section 6.2 WOA defaults. `success_threshold`
+    (Section 6.2's "sole probability parameter") gates the Monte Carlo verification step
+    of the WOA solver (Section 6.3). `monte_carlo_enabled` toggles Section 6.3 steps 3-4
+    off for callers that want a fast deterministic-only solve (e.g. most tests); Monte
+    Carlo itself is Phase 4.
+
+    `stress_return_haircut` drives `retirement_tests.stress_test`, the deterministic
+    half of Section 6.1's stress test: it is applied *relative to this scenario's own*
+    account returns (a flat haircut, deliberately not `scenario_library.conservative_returns`'
+    absolute 4% floor). An absolute floor would make every scenario at or above 4%
+    collapse to the identical solved WOA regardless of its own return assumption --
+    discovered while wiring up Phase 4, see the Phase 4 scope note in
+    docs/delivery-plan.md -- which would make the Phase 3 return-variant scenarios
+    (conservative/expected/optimistic) meaningless for WOA comparison. The relative
+    haircut keeps a scenario's own return assumption load-bearing while still requiring
+    some margin below it. 0.02 reproduces Section 7.3's 4% stress case off the 6%
+    baseline; `scenario_library.conservative_returns` remains available separately for
+    an explicit "what if returns come in at exactly 4%" comparison.
     """
 
     name: str
@@ -303,6 +314,7 @@ class Scenario:
     cash_reserve_months: int = 24
     max_initial_withdrawal_warning: Decimal = Decimal("0.04")
     legacy_test_enabled: bool = False
+    monte_carlo_enabled: bool = True
     stress_return_haircut: Decimal = Decimal("0.02")
     parent_name: Optional[str] = None
     changes: list[AssumptionChange] = field(default_factory=list)

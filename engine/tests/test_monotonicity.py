@@ -20,7 +20,9 @@ def _passes_deterministic(scenario, candidate_date) -> bool:
     projection = run_projection(
         scenario, terminal_age=scenario.terminal_age, retirement_date=candidate_date
     )
-    schedule = build_schedule(candidate_date.year, scenario.retirement_inflation_rate)
+    schedule = build_schedule(
+        scenario.household.expense_categories, candidate_date.year, scenario.retirement_inflation_rate
+    )
     suite = evaluate_deterministic_tests(
         scenario, projection, candidate_date, schedule.first_year_total
     )

@@ -11,6 +11,7 @@ from fios_engine.seed import build_baseline_scenario
 
 def test_comparing_a_scenario_against_itself_is_a_no_op():
     baseline = build_baseline_scenario()
+    baseline.monte_carlo_enabled = False
     identical = lib.expected_returns(baseline)
 
     comparison = compare_scenarios(baseline, identical)
@@ -22,8 +23,10 @@ def test_comparing_a_scenario_against_itself_is_a_no_op():
 
 def test_conservative_returns_pushes_woa_later():
     """Section 8.2's "WOA impact" comparison re-solves WOA for each scenario, so a
-    worse return assumption should push the achievable Work-Optional Age later."""
+    worse return assumption should push the achievable Work-Optional Age later. Monte
+    Carlo disabled for speed -- this is testing the deterministic solve, not Phase 4."""
     baseline = build_baseline_scenario()
+    baseline.monte_carlo_enabled = False
     conservative = lib.conservative_returns(baseline)
 
     comparison = compare_scenarios(baseline, conservative)
@@ -51,8 +54,9 @@ def test_conservative_returns_lowers_sas_at_a_fixed_retirement_date():
 def test_retiring_early_as_a_fixed_decision_lowers_sas_and_moves_woa_earlier():
     """Retirement-timing decisions must be evaluated at their own fixed date, not
     re-solved -- otherwise the comparison is a no-op (see comparison.snapshot's
-    docstring and the bug this guards against)."""
+    docstring and the bug this guards against). Monte Carlo disabled for speed."""
     baseline = build_baseline_scenario()
+    baseline.monte_carlo_enabled = False
     retire_early = lib.retire_at_age(baseline, 57)
 
     comparison = compare_scenarios(
@@ -65,8 +69,9 @@ def test_retiring_early_as_a_fixed_decision_lowers_sas_and_moves_woa_earlier():
     assert comparison.sas_impact_dollars < 0
 
 
-def test_success_probability_is_explicitly_unavailable():
+def test_success_probability_unavailable_when_monte_carlo_disabled():
     baseline = build_baseline_scenario()
+    baseline.monte_carlo_enabled = False
     conservative = lib.conservative_returns(baseline)
 
     comparison = compare_scenarios(baseline, conservative)
@@ -76,8 +81,24 @@ def test_success_probability_is_explicitly_unavailable():
     assert comparison.status is Status.PLACEHOLDER
 
 
+def test_success_probability_is_computed_via_monte_carlo():
+    """Phase 4: each side's success probability comes from an actual Monte Carlo run
+    at its own evaluated_at date, not a placeholder."""
+    baseline = build_baseline_scenario()
+    conservative = lib.conservative_returns(baseline)
+
+    comparison = compare_scenarios(baseline, conservative)
+
+    assert comparison.status is Status.CONFIRMED
+    assert comparison.success_probability_before is not None
+    assert comparison.success_probability_after is not None
+    assert 0.0 <= comparison.success_probability_before <= 1.0
+    assert 0.0 <= comparison.success_probability_after <= 1.0
+
+
 def test_what_changed_reports_the_recorded_assumption_edit():
     baseline = build_baseline_scenario()
+    baseline.monte_carlo_enabled = False
     higher_tax = lib.higher_tax_on_company_payouts(baseline)
 
     comparison = compare_scenarios(baseline, higher_tax)

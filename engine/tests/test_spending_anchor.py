@@ -21,13 +21,13 @@ CATEGORIES = [
 def test_2032_is_the_anchor_not_the_base_year():
     """The engine must never inflate $300,000 forward from 2026 to 2032 -- 2032 is the
     anchor year itself, so first_year_spending(2032) must equal exactly $300,000."""
-    assert first_year_spending(2032, INFLATION) == Decimal("300000")
+    assert first_year_spending(CATEGORIES, 2032, INFLATION) == Decimal("300000")
 
 
 def test_earlier_candidate_deflates_later_candidate_inflates():
-    earlier = first_year_spending(2031, INFLATION)
-    anchor = first_year_spending(2032, INFLATION)
-    later = first_year_spending(2033, INFLATION)
+    earlier = first_year_spending(CATEGORIES, 2031, INFLATION)
+    anchor = first_year_spending(CATEGORIES, 2032, INFLATION)
+    later = first_year_spending(CATEGORIES, 2033, INFLATION)
 
     assert earlier < anchor < later
     assert to_dollars(earlier) == Decimal("291262")
@@ -49,7 +49,7 @@ def test_categories_scale_proportionally():
 
 
 def test_spending_grows_at_inflation_rate_only_after_retirement_begins():
-    schedule = build_schedule(2032, INFLATION)
+    schedule = build_schedule(CATEGORIES, 2032, INFLATION)
 
     assert schedule.spending_in_year(2032) == Decimal("300000")
     assert schedule.spending_in_year(2033) == Decimal("300000") * (1 + INFLATION)

@@ -16,15 +16,21 @@ omission here:
   under which tax would be omitted, so this test is a structural always-pass, not a
   placeholder.
 
-The `stress` test is the one deliberate Phase 2 simplification. Section 6.1 defines it
-as "the configured conservative deterministic scenario and/or the Monte Carlo Success
-Threshold". Both halves depend on infrastructure this phase does not build: the
-Section 8.1 "Conservative returns" built-in scenario needs the scenario clone/override
-engine (Phase 3), and the Monte Carlo half needs Phase 4. Rather than guessing at that
-machinery early, `stress_test` uses the one concrete conservative figure the PRD
-already gives ahead of Phase 3 -- Section 7.3's 4% post-retirement stress case, applied
-via `Scenario.stress_return_haircut` -- and is marked `Status.PLACEHOLDER` so callers
-can tell it is standing in for the full Section 8.1/9 stress suite, not implementing it.
+The `stress` test implements the deterministic half of Section 6.1's "the plan passes
+the configured conservative deterministic scenario and/or the Monte Carlo Success
+Threshold": it re-runs the candidate with every non-cash account's return haircut by
+`Scenario.stress_return_haircut`, *relative to whatever this scenario's own return
+already is* -- not `scenario_library.conservative_returns`'s absolute 4% floor. An
+absolute floor was tried first and rejected: it makes every scenario at or above 4%
+collapse to the identical solved WOA regardless of its own return assumption, which
+would make the Phase 3 return-variant scenarios (conservative/expected/optimistic)
+meaningless for WOA comparison (see `models.Scenario`'s docstring and the Phase 4 scope
+note in docs/delivery-plan.md). It is deliberately *not* where the Monte Carlo half
+lives -- running 10,000 simulations at every coarse-scan/bisection candidate would
+defeat Section 6.3's own performance target, so `woa_solver.solve_woa` runs Monte Carlo
+only once, at the final bisected candidate (Section 6.3 steps 3-4), and this function's
+result is marked `Status.PLACEHOLDER` to signal it is one half of a compound test, not
+the whole thing.
 """
 
 from __future__ import annotations
@@ -183,7 +189,9 @@ def stress_test(scenario: Scenario, retirement_date: date, terminal_age: int) ->
     return TestOutcome(
         "stress",
         passed,
-        f"deterministic conservative proxy (return haircut {scenario.stress_return_haircut}): "
+        f"deterministic conservative proxy (return haircut {scenario.stress_return_haircut}, "
+        f"relative to this scenario's own {scenario.household.accounts['taxable'].annual_return.value} "
+        "base return): "
         f"longevity {'pass' if longevity.passed else 'fail: ' + longevity.detail}, "
         f"spending {'pass' if spending.passed else 'fail: ' + spending.detail}",
         status=Status.PLACEHOLDER,

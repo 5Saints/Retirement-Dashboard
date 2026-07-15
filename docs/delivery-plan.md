@@ -10,8 +10,8 @@ user before the next phase begins.
 |---|---|---|---|
 | 1. Core engine | Data model, deterministic projection, baseline scenario, consumption residual | All baseline acceptance tests pass (Section 19) | **Done** |
 | 2. WOA and SAS | Candidate-date solver (Section 6.3), spending solver, FID, Freedom Margin, dashboard metrics | WOA, FID, SAS, FM reproducible with trace | **Done -- Monte Carlo step deferred to Phase 4 (see scope note)** |
-| 3. Scenario engine | Clone, override, compare, decision evaluation | Side-by-side decisions operational | **In progress (this repo) -- see scope note** |
-| 4. Monte Carlo | Stochastic returns, inflation, probability outputs | 10,000-run simulation validated | Not started |
+| 3. Scenario engine | Clone, override, compare, decision evaluation | Side-by-side decisions operational | **Done -- see scope note** |
+| 4. Monte Carlo | Stochastic returns, inflation, probability outputs | 10,000-run simulation validated | **Done -- see scope note** |
 | 4b. Readiness Score | RRS composite, component display, normalization logic, hard-constraint override | Score reproducible; components visible; failed longevity/essential-spending test forces failure display | Not started |
 | 5. Tax and withdrawal | Withdrawal sequencing, Roth conversion, tax layers | Tax assumptions visible and testable | Not started |
 | 6a. Recommendation engine: generation | Candidate generation, ranking, full Section 26 output fields | Top-five ranked recommendations with explanations and traces | Not started |
@@ -114,10 +114,72 @@ changed?" summary (Phase 4b/5), scenario persistence/versioning beyond the in-me
 `AssumptionChange` log (no DB/API layer exists yet), or Roth-conversion/withdrawal-sequencing
 decision types.
 
+## Phase 4 scope note
+
+Phase 4 as delivered in this pass implements `fios_engine/monte_carlo.py`: correlated
+stochastic annual returns and inflation, a deterministic backbone (liquidity-event proceeds,
+401(k) contributions -- both return/inflation-independent per Section 9's own equity-price-path
+carve-out) computed once rather than resimulated per path, and the required outputs (success
+probability, median terminal balance, 10th/25th/75th/90th percentiles, depletion-age list,
+minimum-portfolio-balance median). It wires Section 6.3 steps 3-4 into `woa_solver.solve_woa`
+(Monte Carlo verification at the earliest deterministic-passing candidate, stepping forward
+monthly on failure until the success threshold clears or the search boundary is reached), and
+surfaces success probability on `DashboardSummary` and `comparison.ScenarioComparison`
+(`Scenario.monte_carlo_enabled=False` skips Monte Carlo entirely for a fast deterministic-only
+path, reporting `Status.PLACEHOLDER` the same way Phase 2 did before this phase existed).
+
+**The Decimal-vs-performance tradeoff was discussed with the user before implementation**
+(Section 11 requires Decimal, "never floating-point," everywhere; Section 9/20 requires 10,000
+simulations under 15 seconds, which is not achievable in pure-Python Decimal arithmetic at this
+scale). The user chose `numpy` float64 arrays scoped to `monte_carlo.py` only -- confirmed,
+not assumed. The deterministic engine (`projection.py` and everything built on it) is completely
+unaffected and stays pure Decimal; `numpy` is now a declared dependency (`pyproject.toml`),
+used nowhere else. Measured performance: 10,000 simulations in ~0.06s (vs. the 15s target), a
+full `solve_woa` call including Monte Carlo verification in ~5s (vs. the 45s target).
+
+Capital-market assumptions -- return/inflation standard deviations and their correlation -- are
+not given numerically anywhere in the PRD (Section 7.3 gives only point estimates), so
+`monte_carlo.py`'s `PORTFOLIO_RETURN_STDEV`/`INFLATION_STDEV`/`RETURN_INFLATION_CORRELATION`
+constants are engine-author assumptions, flagged the same way Phase 1 flagged its tax and
+mortgage placeholders. Both non-cash accounts (taxable, 401(k)) share one stochastic "portfolio
+return" factor rather than independent asset-class draws, since every scenario built so far
+gives them the same point-estimate return -- there is no differentiated asset-class data yet.
+
+**Resolved from the Phase 3 checkpoint:** wiring Monte Carlo into the WOA solver surfaced that
+an *absolute* conservative-scenario floor for `retirement_tests.stress_test` (tried first, using
+`scenario_library.conservative_returns` directly) makes every scenario at or above the 4% floor
+collapse to the identical solved WOA regardless of its own return assumption -- since the stress
+gate would always bind at exactly 4%, the Phase 3 return-variant scenarios (conservative/
+expected/optimistic) would become meaningless for WOA comparison. `Scenario.stress_return_haircut`
+was kept (not replaced) for exactly this reason: it is applied *relative to each scenario's own*
+return, preserving differentiation. `scenario_library.conservative_returns` remains available
+separately for an explicit "what if returns come in at exactly 4%" comparison. See
+`models.Scenario`'s docstring and `retirement_tests.stress_test` for the full reasoning.
+
+**Also resolved:** Phase 3's `success_probability_before`/`success_probability_after` (previously
+`None`/`Status.PLACEHOLDER`) are now populated by real Monte Carlo runs in `comparison.py`.
+
+**A real, previously-undiscovered bug was found via the Section 20 Monte Carlo boundary tests**
+(specifically, trying to force a "certain depletion" boundary case by inflating expense-category
+anchors and observing zero effect on the result): `spending.first_year_spending`/`build_schedule`
+computed the household's actual retirement spending target from a hardcoded `ANCHOR_TOTAL =
+Decimal("300000")` module constant, completely decoupled from `household.expense_categories`.
+This meant `scenario_library.reduce_discretionary_spending` and any future spending-increase
+decision silently had **no effect** on simulated withdrawals -- only on the essential/
+discretionary *ratio* used by the liquidity test, never on the total dollar amount actually
+withdrawn. Fixed by deriving the anchor total from `sum(category.anchor_amount for category in
+categories)` instead of the constant; every call site (`projection.py`, `woa_solver.py`,
+`sas_solver.py`, `dashboard.py`, `comparison.py`, `monte_carlo.py`) now passes the household's
+own `expense_categories` through. This is exactly the kind of gap Section 20's boundary-test
+requirement exists to catch.
+
+It deliberately does **not** implement: variable longevity or healthcare shocks ("in later
+phases" per Section 9 itself), correlated *multi*-asset-class returns (only one shared portfolio
+factor, see above), or the Retirement Readiness Score's probability component (Phase 4b, next).
+
 ## Next checkpoint
 
-Before starting Phase 4 (Monte Carlo), review with the user: the stochastic return/inflation
-model and correlation assumptions (Section 9), the reproducible-seed strategy for solver-stepping
-comparability (Section 6.3's "variance-consistent seeds"), and whether Phase 2's deterministic
-stress-test proxy (`Scenario.stress_return_haircut`) and Phase 3's `market_decline` gap (balance-
-level shocks) should be resolved as part of Phase 4 rather than carried forward again.
+Before starting Phase 4b (Retirement Readiness Score), review with the user: the RRS
+normalization specification (Section 23 explicitly requires this as a design document before
+4b begins), the component weighting (Section 25.1), and the hard-constraint override behavior
+when longevity/essential-spending tests fail.

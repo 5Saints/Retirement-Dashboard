@@ -70,7 +70,9 @@ def test_liquidity_test_reserve_matches_essential_half_of_total_at_two_year_rese
     scenario = build_baseline_scenario()
     candidate = date(2032, 1, 1)
     projection = run_projection(scenario, terminal_age=scenario.terminal_age, retirement_date=candidate)
-    schedule = build_schedule(candidate.year, scenario.retirement_inflation_rate)
+    schedule = build_schedule(
+        scenario.household.expense_categories, candidate.year, scenario.retirement_inflation_rate
+    )
 
     outcome = liquidity_test(scenario, projection, candidate, schedule.first_year_total)
 
@@ -86,7 +88,9 @@ def test_evaluate_all_tests_includes_stress_as_placeholder():
     scenario = build_baseline_scenario()
     candidate = date(2032, 1, 1)
     projection = run_projection(scenario, terminal_age=scenario.terminal_age, retirement_date=candidate)
-    schedule = build_schedule(candidate.year, scenario.retirement_inflation_rate)
+    schedule = build_schedule(
+        scenario.household.expense_categories, candidate.year, scenario.retirement_inflation_rate
+    )
 
     suite = evaluate_all_tests(
         scenario, projection, candidate, scenario.terminal_age, schedule.first_year_total
