@@ -9,8 +9,8 @@ user before the next phase begins.
 | Phase | Deliverable | Exit Criteria | Status |
 |---|---|---|---|
 | 1. Core engine | Data model, deterministic projection, baseline scenario, consumption residual | All baseline acceptance tests pass (Section 19) | **Done** |
-| 2. WOA and SAS | Candidate-date solver (Section 6.3), spending solver, FID, Freedom Margin, dashboard metrics | WOA, FID, SAS, FM reproducible with trace | **In progress (this repo) -- deterministic solver done, Monte Carlo step deferred (see scope note)** |
-| 3. Scenario engine | Clone, override, compare, decision evaluation | Side-by-side decisions operational | Not started |
+| 2. WOA and SAS | Candidate-date solver (Section 6.3), spending solver, FID, Freedom Margin, dashboard metrics | WOA, FID, SAS, FM reproducible with trace | **Done -- Monte Carlo step deferred to Phase 4 (see scope note)** |
+| 3. Scenario engine | Clone, override, compare, decision evaluation | Side-by-side decisions operational | **In progress (this repo) -- see scope note** |
 | 4. Monte Carlo | Stochastic returns, inflation, probability outputs | 10,000-run simulation validated | Not started |
 | 4b. Readiness Score | RRS composite, component display, normalization logic, hard-constraint override | Score reproducible; components visible; failed longevity/essential-spending test forces failure display | Not started |
 | 5. Tax and withdrawal | Withdrawal sequencing, Roth conversion, tax layers | Tax assumptions visible and testable | Not started |
@@ -66,10 +66,58 @@ the Monte Carlo Success Threshold gate (Phase 4). It also does not implement sce
 cloning/overrides, tax brackets, withdrawal sequencing beyond the existing cash/taxable/401k
 order, recommendations, or auth/security infrastructure -- those remain Phases 3-8.
 
+## Phase 3 scope note
+
+Phase 3 as delivered in this pass implements: the scenario clone/override primitive
+(`fios_engine/scenario_engine.py`, `clone_scenario`/`record_change`, Section 8's "immutable set
+of assumptions derived from a parent" plus the Section 28 audit-trail fields on
+`Scenario.changes`); a `Decision` entity (Section 11) with real-estate-purchase, real-estate-sale,
+and spending-adjustment types injected into the monthly loop the same way liquidity events
+already are (`fios_engine/models.py`, `fios_engine/projection.py`); the Section 8.1/28 built-in
+scenarios and named templates (`fios_engine/scenario_library.py`: conservative/expected/optimistic
+returns, high inflation, higher tax on company payouts, lower company payout, a partial market-
+decline scenario, `retire_at_age` covering all of "retire now/57/58/59" and "retire N years
+earlier/later", reduce discretionary spending, increase spending, purchase additional real
+estate, emergency lake-home sale); and Section 8.2's Decision Output comparison
+(`fios_engine/comparison.py`: WOA impact, SAS impact, liquidity impact, legacy impact at ages
+75/85/95, tax impact, risk impact, and a "What changed?" summary over the recorded assumption
+edits plus the WOA/FID/SAS/FM deltas).
+
+A load-bearing subtlety surfaced while building this: `solve_woa` searches every candidate date
+independent of `household.planned_retirement_age`, so comparing two scenarios by always
+re-solving WOA on both sides makes every retirement-timing decision (e.g. `retire_at_age`) a
+no-op -- the solver just rediscovers the same optimum regardless of the planned age. `snapshot`
+therefore accepts an explicit `retirement_date` to evaluate a scenario at a *fixed* date instead
+of re-solving; `compare_scenarios` exposes `baseline_retirement_date`/`alternative_retirement_date`
+so a caller comparing a timing decision passes
+`alternative_retirement_date=alternative.household.retirement_date`. Comparisons of an
+assumption-only scenario (returns, inflation, tax, spending scale) should leave both dates
+unset, letting WOA re-solve on each side -- that is the correct question for those ("how does
+this change move my achievable WOA?"). `tests/test_comparison.py` covers both cases explicitly
+so this distinction doesn't silently regress.
+
+A second, unrelated fix landed alongside this work: `tests/test_monotonicity.py` (Phase 2)
+intermittently failed on a boundary case where a multi-decade projection's Decimal arithmetic
+(28-digit context precision) left a sub-cent (~1e-23) spending shortfall at the razor's-edge
+pass/fail boundary -- not a real monotonicity violation. `_withdraw_for_spending`
+(`fios_engine/projection.py`) now treats a shortfall at or below one cent as fully funded,
+consistent with the engine's existing cents-based reporting convention (`money.py`).
+
+It deliberately does **not** implement: the full "Immediate 25% market decline... extended to
+shock the company-equity price path alongside the portfolio" scenario (Section 8.1) -- the
+`market_decline` builder only shocks the equity price path (the mechanism this engine already
+has); shocking account balances too needs a new projection-engine concept (a balance-level shock
+event at an arbitrary date) that doesn't exist yet. It also does not implement the Section 8.2
+"Success probability: before and after" output (needs Phase 4 Monte Carlo -- reported as
+`None`/`Status.PLACEHOLDER`), the Retirement Readiness Score or RSP components of the "What
+changed?" summary (Phase 4b/5), scenario persistence/versioning beyond the in-memory
+`AssumptionChange` log (no DB/API layer exists yet), or Roth-conversion/withdrawal-sequencing
+decision types.
+
 ## Next checkpoint
 
-Before starting Phase 3 (scenario engine), review with the user: the scenario clone/override
-data model (Section 8), how the Section 8.1 built-in scenarios (Conservative returns, market
-decline, lower payout, etc.) compose with the Phase 2 solvers, and whether the deterministic
-stress-test proxy introduced in Phase 2 should be replaced once "Conservative returns" exists
-as a real cloned scenario rather than a flat haircut.
+Before starting Phase 4 (Monte Carlo), review with the user: the stochastic return/inflation
+model and correlation assumptions (Section 9), the reproducible-seed strategy for solver-stepping
+comparability (Section 6.3's "variance-consistent seeds"), and whether Phase 2's deterministic
+stress-test proxy (`Scenario.stress_return_haircut`) and Phase 3's `market_decline` gap (balance-
+level shocks) should be resolved as part of Phase 4 rather than carried forward again.

@@ -195,6 +195,60 @@ class RealEstate:
     )
 
 
+class DecisionType(str, Enum):
+    """PRD Section 11 `Decision` entity, Section 28 named-template building blocks.
+
+    Each type is handled by a distinct code path in projection.py's monthly loop,
+    analogous to how liquidity events already inject at an arbitrary month:
+
+    - REAL_ESTATE_PURCHASE reduces the account named in `funding_source` and credits
+      the zero-appreciation "additional property" bucket that Event 1's $500,000
+      real-estate allocation already uses (Section 4.8's "Planned additional property"
+      row); `description` is an optional human label only, since that bucket doesn't
+      track distinct named properties.
+    - REAL_ESTATE_SALE liquidates the `household.real_estate` entry named in
+      `description` and credits the account named in `funding_source`, e.g. Section
+      4.8's "permit emergency-sale scenario" for the lake home. `amount` of `0`
+      (the default) sells at the property's live projected value; a positive `amount`
+      overrides it (e.g. a specific negotiated price). Property debt is not netted out
+      here, matching the existing convention that only `Liability` entries (the
+      mortgage) carry debt into the projection -- see projection.py's real-estate note.
+    - SPENDING_ADJUSTMENT changes the post-retirement monthly spending target by
+      `amount` per year; pre-retirement spending is a residual (Section 4.10) and is
+      not affected by this decision type.
+    """
+
+    REAL_ESTATE_PURCHASE = "real_estate_purchase"
+    REAL_ESTATE_SALE = "real_estate_sale"
+    SPENDING_ADJUSTMENT = "spending_adjustment"
+
+
+@dataclass
+class Decision:
+    decision_type: DecisionType
+    effective_date: date
+    amount: Decimal
+    funding_source: str = ""
+    recurring_effect: bool = True
+    description: str = ""
+
+
+@dataclass(frozen=True)
+class AssumptionChange:
+    """Section 28: "every assumption change requires an effective date, old value, new
+    value, source, reason, user, and timestamp." `user`/`timestamp` are populated by
+    the persistence layer this engine doesn't own yet (no DB/API exists -- see
+    delivery-plan.md); this record carries everything the engine itself can attest to.
+    """
+
+    field_path: str
+    old_value: object
+    new_value: object
+    source: str
+    reason: str
+    effective_date: Optional[date] = None
+
+
 @dataclass
 class Household:
     name: str
@@ -209,6 +263,7 @@ class Household:
     equity_positions: list[EquityPosition]
     liquidity_events: list[LiquidityEvent]
     real_estate: list[RealEstate]
+    decisions: list[Decision] = field(default_factory=list)
 
     @property
     def retirement_date(self) -> date:
@@ -222,15 +277,20 @@ class Household:
 
 @dataclass
 class Scenario:
-    """Phase 1 has exactly one scenario: the baseline. Cloning/overrides are Phase 3.
+    """A scenario is "a complete, immutable set of assumptions derived from a parent
+    scenario" (Section 8). `parent_name`/`changes` record that lineage: `changes` is
+    the Section 28 audit trail ("every assumption change requires an effective date,
+    old value, new value, source, reason") for whatever `scenario_engine.clone_scenario`
+    and the `scenario_library` builders did to produce this scenario from its parent.
+    The baseline scenario has `parent_name=None` and an empty `changes` list.
 
-    The fields below are the Section 6.2 WOA default thresholds. `stress_return_haircut`
+    The threshold fields below are the Section 6.2 WOA defaults. `stress_return_haircut`
     is the Phase 2 deterministic stand-in for the Section 8.1 "Conservative returns"
     built-in scenario: Section 7.3 gives 6% nominal as the default post-retirement
     balanced return with "stress cases at 4% and 8%", so 0.02 reproduces the 4% stress
-    case as a flat haircut off every invested account's return. The full scenario-clone
-    machinery (Section 8) and Monte Carlo Success Threshold gate (Section 9) are Phases
-    3 and 4; see docs/delivery-plan.md.
+    case as a flat haircut off every invested account's return. Phase 3's
+    `scenario_library.conservative_returns` builds the real thing; the Monte Carlo
+    Success Threshold gate (Section 9) is still Phase 4; see docs/delivery-plan.md.
     """
 
     name: str
@@ -244,3 +304,5 @@ class Scenario:
     max_initial_withdrawal_warning: Decimal = Decimal("0.04")
     legacy_test_enabled: bool = False
     stress_return_haircut: Decimal = Decimal("0.02")
+    parent_name: Optional[str] = None
+    changes: list[AssumptionChange] = field(default_factory=list)

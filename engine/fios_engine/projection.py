@@ -37,7 +37,8 @@ from decimal import Decimal
 
 from .equity import concentration_risk_index, run_share_ledger
 from .metrics import investable_assets, net_worth, total_assets
-from .models import Scenario, Status, Valued
+from .models import DecisionType, Scenario, Status, Valued
+from .money import CENT
 from .mortgage import placeholder_payoff_plan
 from .spending import SpendingSchedule, build_schedule
 from .tax import TAX_DEFERRED_DISTRIBUTION_TAX_RATE
@@ -113,6 +114,7 @@ class PeriodResult:
     investable_assets: Decimal
     concentration_vs_net_worth: Decimal
     concentration_vs_investable: Decimal
+    distribution_tax: Decimal = Decimal("0")
     warnings: list[str] = field(default_factory=list)
 
 
@@ -160,6 +162,14 @@ def run_projection(
     for step in ledger_steps:
         resolved = step.event.resolve_date(retirement_date)
         event_by_month.setdefault(date(resolved.year, resolved.month, 1), []).append(step)
+
+    decisions_by_month: dict[date, list] = {}
+    for decision in household.decisions:
+        key = date(decision.effective_date.year, decision.effective_date.month, 1)
+        decisions_by_month.setdefault(key, []).append(decision)
+    recurring_spending_adjustments = [
+        d for d in household.decisions if d.decision_type is DecisionType.SPENDING_ADJUSTMENT
+    ]
 
     mortgage = household.liabilities["primary_mortgage"]
     mortgage_payoff = None
@@ -251,13 +261,26 @@ def run_projection(
                 )
             )
 
+        # Decisions (Section 11/28): real-estate purchase/sale apply at their effective
+        # month, same event-by-month mechanism as liquidity events above.
+        for decision in decisions_by_month.get(month_key, []):
+            if decision.decision_type is DecisionType.REAL_ESTATE_PURCHASE:
+                balances[decision.funding_source] -= decision.amount
+                additional_property_value += decision.amount
+            elif decision.decision_type is DecisionType.REAL_ESTATE_SALE:
+                proceeds = decision.amount if decision.amount > 0 else re_values[decision.description]
+                re_values[decision.description] = Decimal("0")
+                balances[decision.funding_source] += proceeds
+
         # Consumption residual (Section 4.10): applies to salary/bonus only, never to
         # liquidity-event proceeds, which follow their allocation rules exclusively.
+        distribution_tax = Decimal("0")
         if not is_retired:
             implied_spending = gross_income - estimated_taxes - contributions_401k - debt_service
         else:
             monthly_target = spending_schedule.spending_in_year(current.year) / 12
-            actual_spending = _withdraw_for_spending(balances, monthly_target, warnings)
+            monthly_target += _spending_adjustment(recurring_spending_adjustments, current) / 12
+            actual_spending, distribution_tax = _withdraw_for_spending(balances, monthly_target, warnings)
 
         # 6. Investment returns and tax drag (tax drag on taxable/401k defaults to zero
         # per Section 4.6/22 pending user configuration)
@@ -297,6 +320,7 @@ def run_projection(
                 investable_assets=inv_assets,
                 concentration_vs_net_worth=concentration_risk_index(equity_value, nw),
                 concentration_vs_investable=concentration_risk_index(equity_value, inv_assets),
+                distribution_tax=distribution_tax,
                 warnings=warnings,
             )
         )
@@ -307,13 +331,28 @@ def run_projection(
     return ProjectionOutput(scenario_name=scenario.name, periods=periods)
 
 
+def _spending_adjustment(decisions: list, current: date) -> Decimal:
+    """Sum of active SPENDING_ADJUSTMENT decisions' annual `amount` at `current`: a
+    recurring decision applies from its effective date onward, a one-time decision
+    only in its effective year (e.g. a single large discretionary purchase)."""
+    total = Decimal("0")
+    for decision in decisions:
+        if decision.effective_date <= current and (
+            decision.recurring_effect or decision.effective_date.year == current.year
+        ):
+            total += decision.amount
+    return total
+
+
 def _withdraw_for_spending(
     balances: dict[str, Decimal], monthly_target: Decimal, warnings: list[str]
-) -> Decimal:
+) -> tuple[Decimal, Decimal]:
     """Sequential withdrawal order: cash, taxable, tax-deferred (Section 7.5 default
     order; Roth/real-estate sale not modeled in Phase 1 baseline). Tax-deferred
     withdrawals are grossed up by the distribution tax placeholder so the household
-    still nets the target spending amount after tax."""
+    still nets the target spending amount after tax. Returns (actual_spending,
+    distribution_tax) -- the latter is the tax withheld on any 401(k) draw, needed for
+    the Phase 3 cumulative tax-impact comparison (Section 8.2)."""
     remaining = monthly_target
     for account_name in ("cash", "taxable"):
         available = balances[account_name]
@@ -321,17 +360,24 @@ def _withdraw_for_spending(
         balances[account_name] -= draw
         remaining -= draw
         if remaining <= 0:
-            return monthly_target
+            return monthly_target, Decimal("0")
 
+    distribution_tax = Decimal("0")
     if remaining > 0:
         gross_needed = remaining / (1 - TAX_DEFERRED_DISTRIBUTION_TAX_RATE.value)
         available = balances["401k"]
         draw = min(available, gross_needed)
         balances["401k"] -= draw
         net_from_401k = draw * (1 - TAX_DEFERRED_DISTRIBUTION_TAX_RATE.value)
+        distribution_tax = draw - net_from_401k
         remaining -= net_from_401k
-        if remaining > 0:
+        # A shortfall below one cent is Decimal rounding noise from ~28-digit context
+        # precision compounding over decades of monthly operations, not a real spending
+        # failure -- the engine's own reporting convention (money.py) is cents anyway.
+        if remaining > CENT:
             warnings.append(
                 f"portfolio depleted; unable to fund {remaining} of monthly spending target"
             )
-    return monthly_target - max(remaining, Decimal("0"))
+        elif remaining > 0:
+            remaining = Decimal("0")
+    return monthly_target - max(remaining, Decimal("0")), distribution_tax
