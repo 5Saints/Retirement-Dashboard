@@ -16,7 +16,7 @@ user before the next phase begins.
 | 5. Tax and withdrawal | Withdrawal sequencing, Roth conversion, tax layers | Tax assumptions visible and testable | **Done -- see scope note** |
 | 6a. Recommendation engine: generation | Candidate generation, ranking, full Section 26 output fields | Top-five ranked recommendations with explanations and traces | **Done -- see scope note** |
 | 6b. Recommendation engine: history | Statuses, user responses, realized-impact tracking (Section 26.1) | History persisted and queryable | **Done -- see scope note** |
-| 7. Legacy and reporting | Estate projections and polished reports | PDF/Excel/CSV exports complete | Not started |
+| 7. Legacy and reporting | Estate projections and polished reports | PDF/Excel/CSV exports complete | **Done -- see scope note** |
 | 8. Integrations | Optional account aggregation and valuation feeds | User-authorized and security-reviewed | Not started |
 
 ## Phase 1 scope note
@@ -351,12 +351,90 @@ hand per phase, and `scenario_version` is a short content-hash fingerprint of th
 
 This closes out Phase 6 (6a generation, 6b history) as scoped by CR-006's phase split.
 
+## Phase 7 scope note
+
+The prior checkpoint raised a dependency question, resolved with the user before writing any
+code: PDF/Excel exports need a rendering/writer library this engine doesn't have, so, following
+the same pattern as the Phase 4 numpy exception, the choice (`reportlab` for PDF, `openpyxl` for
+Excel) was confirmed with the user rather than picked silently. Both are scoped entirely to the
+new `report_export.py` module -- the calculation engine itself (`projection.py`, the solvers,
+Monte Carlo) stays untouched by this addition, same as numpy stayed scoped to `monte_carlo.py`.
+
+**Legacy Value / estate projections (Section 5).** `estate.py` is new: `legacy_values(scenario,
+...)` reports `Legacy Value` at ages 75/85/95 (Section 8.2/13's ages) for a *single* scenario.
+Per Section 5's own definition ("financial assets plus net real-estate equity less debts"), this
+is exactly `projection.PeriodResult.net_worth` at each age's date -- no new calculation, just
+naming and packaging an existing figure. `age_date`/`net_worth_at_age` were promoted out of
+`comparison.py` (which had a private, near-identical pair for its baseline/alternative *diff*)
+into this new module, and `comparison.py` now imports them, removing the duplication. Per
+Section 6.1/24 ("terminal estate is informational unless the user explicitly enables a legacy
+floor" / "must not delay retirement"), this module only reports -- it never gates or feeds back
+into WOA/SAS.
+
+**Assumption Register (Section 14).** `retirement_readiness._material_valued_statuses` (a
+Phase-4b-internal list of bare `Status` values, used only for the aggregate confidence percent)
+was generalized into a public `material_valued_records(household) -> list[AssumptionRecord]`,
+where each `AssumptionRecord` carries `name`/`value`/`status`/`source`, not just `status`. The
+existing `assumption_confidence_percent` now derives from this richer traversal (verified to
+produce identical percentages via the existing Phase 4b golden tests), and the new Assumption
+Register report reuses the same function -- one traversal, two consumers, rather than a second
+copy that could drift from the first. (One incidental bug caught while generalizing: the draft
+used `LiquidityEvent.name`, which doesn't exist on that model -- `LiquidityEvent` is positional,
+not named. Fixed to `Liquidity event {index}` before it ever reached a test file.)
+
+**Reporting (Section 14, 12 report types).** `reporting.py` is new: a generic `Report(title,
+metadata, sections)` / `ReportSection(heading, rows)` model, with `ReportMetadata` carrying
+Section 12's required "model date, scenario name, assumptions, and model version" on every
+report. Twelve builder functions -- one per Section 14 row -- assemble that shape from data this
+package already computes elsewhere (dashboard, projection, comparison, monte_carlo, estate,
+retirement_readiness) rather than introducing twelve bespoke schemas:
+
+- Executive summary, full annual projection table, balance sheet, cash-flow statement,
+  asset-allocation report, company-equity ledger and event schedule, retirement-income sources
+  (flagged: the baseline household has no Social Security or pension income per Section 4.1, so
+  this report is portfolio-withdrawal-only until such a stream exists -- an empty/short table is
+  expected, not a bug), scenario-comparison report, Monte Carlo report, legacy report (Section
+  6.1/24 informational-only, reusing `estate.py`), assumption register (reusing the generalized
+  traversal above), and audit/change report (from `Scenario.changes`).
+- No builder calls `date.today()` -- every one takes an explicit `as_of: date` (Section 27
+  reproducibility, consistent with the rest of this engine). Several accept an
+  already-computed result (`summary`, `projection`, `comparison`) so a caller generating several
+  reports for one scenario doesn't pay to re-solve WOA/Monte Carlo/re-run the projection per
+  report.
+- `MODEL_VERSION` (`recommendation_history.py`) was bumped to `"fios-engine-phase7"` per its own
+  documented convention (a hand-bumped constant, no formal release/versioning system exists).
+
+**Exports (Section 14: "PDF for presentation, Excel for audit and custom analysis, CSV/JSON for
+data portability").** `report_export.py` is new: four generic functions
+(`export_csv`/`export_json`/`export_excel`/`export_pdf`) that operate on any `Report`, not on a
+specific report type. Decimal values are kept as exact strings for CSV/JSON (data-portability
+formats, where introducing float rounding would be a regression from this engine's Decimal-only
+guarantee) and converted to native numbers for Excel/PDF (Section 14 calls Excel out for "custom
+analysis," which implies computable cells; this conversion is presentation-only and the engine
+never reads these exported cells back in). CSV packs all of a report's sections into one file
+separated by blank lines (CSV has no native multi-table concept); Excel gives each section its
+own sheet plus a leading Metadata sheet, with 31-character sheet-name truncation and
+de-duplication for colliding headings; PDF renders a title/metadata block followed by one table
+per section.
+
+Tests: `test_estate.py`, `test_reporting.py` (all twelve builders plus the Section 12 metadata
+requirement), and `test_report_export.py` (all four export formats, including a sheet-name
+collision case and Decimal-to-native-number conversion). Full suite green, including the
+pre-existing 111 Phase 6b tests, confirming the `comparison.py` refactor didn't change any
+existing behavior.
+
+This closes out Phase 7 (legacy and reporting) per Section 21's phase list.
+
 ## Next checkpoint
 
-Before starting Phase 7 (legacy and reporting: estate projections and polished reports), review
-with the user: which export formats to prioritize first (PDF/Excel/CSV are all required by the
-exit criterion), whether "polished reports" implies a templating/rendering dependency this
-engine doesn't have yet (consistent with the numpy precedent from Phase 4, any new dependency
-should be scoped and confirmed before adding it), and how estate/legacy projections already
-computed in `comparison.py` (`legacy_at_75/85/95`) should be extended to the fuller reporting
-detail Section 7 (`Legacy Value`) and Section 13 likely require.
+Phase 8 (Integrations: optional account aggregation and valuation feeds, user-authorized and
+security-reviewed) is qualitatively different from every phase so far -- it is not a calculation-
+engine feature at all. Section 16's own architecture boundary ("the calculation engine must not
+depend on the web framework, database ORM, or UI") means account aggregation, credential
+handling, and authorization review belong to an API/persistence layer this project has
+deliberately never built (`recommendation_history.py`'s two in-process/JSON-file stores are the
+closest thing that exists, and even those were flagged as stand-ins for a real database).
+Before starting Phase 8, review with the user whether it makes sense to build inside this
+pure-calculation-engine repository at all, or whether it should wait for the API/database layer
+Section 16 recommends -- committing to an aggregation vendor and an auth/security model are real
+architectural decisions, not engine-author assumptions to flag and proceed past.

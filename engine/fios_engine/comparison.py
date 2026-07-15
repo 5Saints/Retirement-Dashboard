@@ -16,9 +16,10 @@ from datetime import date
 from decimal import Decimal
 
 from .dashboard import DashboardSummary, compute_dashboard_summary
+from .estate import net_worth_at_age
 from .models import Scenario, Status
 from .monte_carlo import run_monte_carlo
-from .projection import ProjectionOutput, add_months, run_projection
+from .projection import ProjectionOutput, run_projection
 from .retirement_tests import LIQUID_CLASSES, essential_fraction
 from .sas_solver import solve_sas
 from .spending import first_year_spending
@@ -54,17 +55,6 @@ class ScenarioComparison:
     success_probability_before: float | None
     success_probability_after: float | None
     status: Status = Status.CONFIRMED
-
-
-def _age_date(scenario: Scenario, age: int) -> date:
-    household = scenario.household
-    return add_months(household.current_date, (age - household.current_age) * 12)
-
-
-def _net_worth_at_age(projection: ProjectionOutput, scenario: Scenario, age: int) -> Decimal | None:
-    target = _age_date(scenario, age)
-    matches = [p for p in projection.periods if p.period_date >= target]
-    return matches[0].net_worth if matches else None
 
 
 def _cumulative_tax(projection: ProjectionOutput) -> Decimal:
@@ -164,9 +154,9 @@ def snapshot(
         success_probability=success_probability,
         min_liquid_balance=min_liquid,
         liquid_years_of_core_coverage_at_retirement=coverage_years,
-        legacy_at_75=_net_worth_at_age(projection, scenario, 75),
-        legacy_at_85=_net_worth_at_age(projection, scenario, 85),
-        legacy_at_95=_net_worth_at_age(projection, scenario, 95),
+        legacy_at_75=net_worth_at_age(projection, scenario, 75),
+        legacy_at_85=net_worth_at_age(projection, scenario, 85),
+        legacy_at_95=net_worth_at_age(projection, scenario, 95),
         cumulative_tax=_cumulative_tax(projection),
         peak_pre_retirement_concentration=peak_concentration,
     )

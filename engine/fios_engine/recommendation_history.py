@@ -43,7 +43,7 @@ from .dashboard import compute_dashboard_summary
 from .models import RecommendationHistoryEntry, RecommendationRecord, RecommendationStatus, Scenario
 from .recommendation import Recommendation, RecommendationSet, build_candidate_scenario
 
-MODEL_VERSION = "fios-engine-phase6b"
+MODEL_VERSION = "fios-engine-phase7"
 RECOMMENDATION_TTL_DAYS = 90  # engine-author assumption; not specified in the PRD
 
 ALLOWED_TRANSITIONS: dict[RecommendationStatus, set[RecommendationStatus]] = {

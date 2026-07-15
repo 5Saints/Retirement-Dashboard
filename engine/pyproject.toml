@@ -1,13 +1,18 @@
 [project]
 name = "fios-engine"
 version = "0.1.0"
-description = "FIOS financial-planning calculation engine (Phase 6b: recommendation history)"
+description = "FIOS financial-planning calculation engine (Phase 7: legacy value and reporting)"
 requires-python = ">=3.11"
 dependencies = [
     # Monte Carlo only (Section 9) -- a deliberate, scoped exception to the engine's
     # Decimal-only rule (Section 11); see fios_engine/monte_carlo.py's module
     # docstring. The deterministic engine has no dependencies and stays pure Decimal.
     "numpy>=1.26",
+    # Report exports only (Section 14/21, Phase 7) -- confirmed with the user before
+    # adding, same as the numpy precedent. reportlab renders PDF; openpyxl writes
+    # Excel. CSV/JSON exports use the standard library and need neither.
+    "reportlab>=4.0",
+    "openpyxl>=3.1",
 ]
 
 [project.optional-dependencies]

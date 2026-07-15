@@ -108,35 +108,98 @@ def _cri_score(equity_value: Decimal, real_estate_value: Decimal, nw: Decimal) -
     return score, f"{combined_concentration_ratio:.1%} combined equity+real-estate exposure"
 
 
-def _material_valued_statuses(household: Household) -> list[Status]:
+@dataclass(frozen=True)
+class AssumptionRecord:
+    """One material Valued/placeholder input, for the Section 25.1/27 confidence
+    indicator and the Section 14 Assumption Register report (Phase 7). `source`
+    identifies the field this came from (e.g. "Account: taxable.annual_return") --
+    the Assumption Register renders it as-is; the confidence calc only needs `status`."""
+
+    name: str
+    value: str
+    status: Status
+    source: str
+
+
+def material_valued_records(household: Household) -> list[AssumptionRecord]:
     """Every material Valued/placeholder input this engine already flags Confirmed/
     Assumption/Placeholder/Estimated/Derived (Section 27), walked for the Section
-    25.1/27 aggregate confidence indicator. See docs/rrs-normalization-spec.md Section 5
-    for why this list and not a generic reflection scan."""
-    statuses = [PRE_RETIREMENT_EFFECTIVE_TAX_RATE.status, TAX_DEFERRED_DISTRIBUTION_TAX_RATE.status]
-    for account in household.accounts.values():
-        statuses.append(account.annual_return.status)
-    for event in household.liquidity_events:
-        statuses.append(event.tax_rate.status)
+    25.1/27 aggregate confidence indicator and the Section 14 Assumption Register. See
+    docs/rrs-normalization-spec.md Section 5 for why this list and not a generic
+    reflection scan."""
+    records = [
+        AssumptionRecord(
+            "Pre-retirement effective tax rate",
+            str(PRE_RETIREMENT_EFFECTIVE_TAX_RATE.value),
+            PRE_RETIREMENT_EFFECTIVE_TAX_RATE.status,
+            "projection.PRE_RETIREMENT_EFFECTIVE_TAX_RATE",
+        ),
+        AssumptionRecord(
+            "Tax-deferred distribution tax rate",
+            str(TAX_DEFERRED_DISTRIBUTION_TAX_RATE.value),
+            TAX_DEFERRED_DISTRIBUTION_TAX_RATE.status,
+            "tax.TAX_DEFERRED_DISTRIBUTION_TAX_RATE",
+        ),
+    ]
+    for account_name, account in household.accounts.items():
+        records.append(
+            AssumptionRecord(
+                f"{account_name} annual return",
+                str(account.annual_return.value),
+                account.annual_return.status,
+                f"Account: {account_name}.annual_return",
+            )
+        )
+    for index, event in enumerate(household.liquidity_events, start=1):
+        records.append(
+            AssumptionRecord(
+                f"Liquidity event {index} tax rate",
+                str(event.tax_rate.value),
+                event.tax_rate.status,
+                f"LiquidityEvent[{index}].tax_rate",
+            )
+        )
     for real_estate in household.real_estate:
-        statuses.append(real_estate.appreciation_rate.status)
+        records.append(
+            AssumptionRecord(
+                f"{real_estate.name} appreciation rate",
+                str(real_estate.appreciation_rate.value),
+                real_estate.appreciation_rate.status,
+                f"RealEstate: {real_estate.name}.appreciation_rate",
+            )
+        )
     for anchor in household.equity_positions[0].anchors:
-        statuses.append(anchor.status)
+        records.append(
+            AssumptionRecord(
+                f"Equity price anchor {anchor.effective_date}",
+                str(anchor.price),
+                anchor.status,
+                "EquityPosition.anchors",
+            )
+        )
     mortgage = household.liabilities.get("primary_mortgage")
     if mortgage is not None and mortgage.opening_balance > 0 and mortgage.payoff_boundary_date is not None:
         plan = placeholder_payoff_plan(
             mortgage.opening_balance, household.current_date, mortgage.payoff_boundary_date
         )
-        statuses.append(Status.PLACEHOLDER if plan.is_placeholder else Status.CONFIRMED)
-    return statuses
+        status = Status.PLACEHOLDER if plan.is_placeholder else Status.CONFIRMED
+        records.append(
+            AssumptionRecord(
+                "Mortgage payoff plan",
+                f"payoff by {mortgage.payoff_boundary_date}",
+                status,
+                "Liability: primary_mortgage payoff plan",
+            )
+        )
+    return records
 
 
 def assumption_confidence_percent(household: Household) -> Decimal:
-    statuses = _material_valued_statuses(household)
-    if not statuses:
+    records = material_valued_records(household)
+    if not records:
         return Decimal("100")
-    total = sum((STATUS_CONFIDENCE_WEIGHT[status] for status in statuses), Decimal("0"))
-    return Decimal("100") * total / len(statuses)
+    total = sum((STATUS_CONFIDENCE_WEIGHT[record.status] for record in records), Decimal("0"))
+    return Decimal("100") * total / len(records)
 
 
 def compute_rrs(scenario: Scenario, summary: DashboardSummary | None = None) -> RRSResult:
