@@ -41,6 +41,7 @@ from decimal import Decimal
 
 from .models import Scenario, Status
 from .projection import ProjectionOutput, run_projection
+from .spending import essential_fraction
 
 LIQUID_CLASSES = {"immediate", "liquid"}
 
@@ -82,15 +83,6 @@ def _retirement_period(projection: ProjectionOutput, retirement_date: date):
             f"projection does not extend to the candidate retirement date {retirement_date}"
         )
     return on_or_after[0]
-
-
-def essential_fraction(expense_categories) -> Decimal:
-    """Fraction of the anchored spending target that is essential (Section 4.9): fixed
-    by the category anchor amounts, independent of retirement year or inflation, since
-    scaling is proportional at any retirement date."""
-    total = sum((c.anchor_amount for c in expense_categories), Decimal("0"))
-    essential = sum((c.anchor_amount for c in expense_categories if c.essential), Decimal("0"))
-    return essential / total
 
 
 def liquidity_test(

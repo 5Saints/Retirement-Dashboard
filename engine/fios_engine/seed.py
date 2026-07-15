@@ -2,6 +2,13 @@
 
 This is production seed data, not a test fixture -- every value here is either Confirmed
 or an explicitly flagged Assumption/Placeholder, matching the PRD's status column.
+
+One exception: the `"roth"` account has no basis in Section 4/Appendix A (the baseline
+household is not stated to hold any Roth savings) and is added at a $0 opening balance
+purely so Section 7.5's Roth-conversion/withdrawal-order mechanics
+(`models.DecisionType.ROTH_CONVERSION`, `Scenario.withdrawal_order`) are usable and
+testable against the baseline household. A $0 balance has no effect on any Section 19
+acceptance number.
 """
 
 from __future__ import annotations
@@ -90,6 +97,13 @@ def build_baseline_household() -> Household:
             opening_balance=Decimal("400000"),
             annual_return=Valued(Decimal("0.06"), Status.ASSUMPTION),
             liquidity_class="liquid",
+        ),
+        "roth": Account(
+            name="Roth IRA",
+            tax_treatment="roth",
+            opening_balance=Decimal("0"),
+            annual_return=Valued(Decimal("0.06"), Status.ASSUMPTION),
+            liquidity_class="retirement_restricted",
         ),
     }
 

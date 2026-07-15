@@ -47,6 +47,18 @@ def scaled_categories(
     return {c.name: c.anchor_amount * scale for c in categories}
 
 
+def essential_fraction(categories: list[ExpenseCategory]) -> Decimal:
+    """Fraction of the anchored spending target that is essential (Section 4.9): fixed
+    by the category anchor amounts, independent of retirement year or inflation, since
+    scaling is proportional at any retirement date. Lives here (not retirement_tests.py,
+    which re-exports it for backward compatibility) so projection.py's spending
+    guardrails (Section 7.5, Phase 5) can use it without importing retirement_tests.py,
+    which itself imports projection.py."""
+    anchor_total = _anchor_total(categories)
+    essential = sum((c.anchor_amount for c in categories if c.essential), Decimal("0"))
+    return essential / anchor_total
+
+
 @dataclass(frozen=True)
 class SpendingSchedule:
     retirement_year: int

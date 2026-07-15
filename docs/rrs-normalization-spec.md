@@ -203,12 +203,14 @@ RRS = 0.35*27.5 + 0.30*100 + 0.20*100 + 0.10*100 + 0.05*77.8
 ```
 
 `hard_constraint_failed = False` (both deterministic tests pass at the solved WOA, by
-construction of the solver itself). `confidence_percent = 51.7%` -- unsurprising given the
+construction of the solver itself). `confidence_percent = 53.1%` -- unsurprising given the
 baseline's own liquidity-event tax rates, real-estate appreciation rates, and the 2030 equity
 price anchor are all flagged `Placeholder`/`Assumption` pending real confirmation (Section 4).
-This number is exercised as a golden-style test in `tests/test_retirement_readiness.py` so a
-future change to any component's formula is visible as a deliberate, reviewed diff rather than
-a silent drift.
+(This figure moved slightly from the 51.7% originally computed in this document, once Phase 5
+added a zero-balance `"roth"` account to the baseline seed -- one more `Assumption`-status
+input in the confidence aggregate, with no effect on any dollar figure.) This number is
+exercised as a golden-style test in `tests/test_retirement_readiness.py` so a future change to
+any component's formula is visible as a deliberate, reviewed diff rather than a silent drift.
 
 ## 7. Explicitly out of scope for this pass
 

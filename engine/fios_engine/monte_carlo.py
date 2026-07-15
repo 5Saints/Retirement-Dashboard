@@ -26,12 +26,23 @@ correlation -- are not given numerically anywhere in the PRD (Section 7.3 gives 
 point estimates: 6% nominal return, 3% inflation, stress cases at 4%/8%). The stdev/
 correlation constants below are therefore engine-author assumptions, flagged the same
 way Phase 1 flagged its tax and mortgage placeholders, pending real capital-market-
-assumption input. Both non-cash accounts (taxable, 401(k)) are modeled as sharing one
-stochastic "portfolio return" factor rather than independent asset-class draws, since
-every scenario built so far (seed.py, scenario_library.py) already gives them the same
-point-estimate return -- there is no differentiated asset-class data yet to draw
-correlated-but-distinct returns from. Cash always earns a deterministic 0%, matching
-its `Status.CONFIRMED` baseline assumption; it never participates in market risk.
+assumption input. All three non-cash accounts (taxable, 401(k), Roth) are modeled as
+sharing one stochastic "portfolio return" factor rather than independent asset-class
+draws, since every scenario built so far (seed.py, scenario_library.py) already gives
+them the same point-estimate return -- there is no differentiated asset-class data yet
+to draw correlated-but-distinct returns from. Cash always earns a deterministic 0%,
+matching its `Status.CONFIRMED` baseline assumption; it never participates in market risk.
+
+Known gap (Phase 5): this module only tracks each account's *opening balance* growing
+under simulated returns plus the deterministic liquidity/401(k) inflows above -- it does
+not process `household.decisions` at all (real-estate purchase/sale, spending
+adjustments, Roth conversions). This has been true since Phase 3/4 integration; Phase
+5's Roth conversions make it more visible, since a scenario that relies on conversions
+to move wealth into the (tax-free-on-withdrawal) Roth bucket will have that movement
+silently ignored by Monte Carlo, understating the simulated Roth balance and its
+after-tax withdrawal advantage. Simulating the full decision set across 10,000 vectorized
+paths is a real undertaking, not attempted in this pass; flagged here rather than
+silently produced as though it were complete.
 """
 
 from __future__ import annotations
@@ -121,6 +132,8 @@ def run_monte_carlo(
     cash = np.full(num_simulations, float(household.accounts["cash"].opening_balance))
     taxable = np.full(num_simulations, float(household.accounts["taxable"].opening_balance))
     k401 = np.full(num_simulations, float(household.accounts["401k"].opening_balance))
+    roth_opening = float(household.accounts["roth"].opening_balance) if "roth" in household.accounts else 0.0
+    roth = np.full(num_simulations, roth_opening)
 
     spending_target = np.full(num_simulations, base_spending)
     min_balance = np.full(num_simulations, np.inf)
@@ -155,15 +168,20 @@ def run_monte_carlo(
             k401 = k401 - draw_401k
             remaining = remaining - draw_401k * (1 - distribution_tax_rate)
 
+            draw_roth = np.minimum(roth, np.maximum(remaining, 0.0))
+            roth = roth - draw_roth
+            remaining = remaining - draw_roth
+
             newly_depleted = (remaining > DEPLETION_TOLERANCE) & np.isnan(depletion_year)
             depletion_year[newly_depleted] = year
 
         taxable = taxable * (1 + port_return)
         k401 = k401 * (1 + port_return)
+        roth = roth * (1 + port_return)
 
-        min_balance = np.minimum(min_balance, cash + taxable + k401)
+        min_balance = np.minimum(min_balance, cash + taxable + k401 + roth)
 
-    terminal_balance = cash + taxable + k401
+    terminal_balance = cash + taxable + k401 + roth
     success = np.isnan(depletion_year)
     depletion_ages = [
         float(household.current_age + (year - current_year)) for year in depletion_year[~success]

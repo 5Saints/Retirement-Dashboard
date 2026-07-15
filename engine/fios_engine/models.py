@@ -216,11 +216,22 @@ class DecisionType(str, Enum):
     - SPENDING_ADJUSTMENT changes the post-retirement monthly spending target by
       `amount` per year; pre-retirement spending is a residual (Section 4.10) and is
       not affected by this decision type.
+    - ROTH_CONVERSION (Section 7.5: "Support Roth-conversion scenarios between
+      retirement and required minimum distributions") moves `amount` (gross, pre-tax)
+      from the 401(k) to the Roth account; the resulting ordinary-income tax (at
+      `tax.TAX_DEFERRED_DISTRIBUTION_TAX_RATE`, the same placeholder rate already used
+      for 401(k) distributions) is paid from `funding_source`, not from the converted
+      amount itself, so the full gross amount grows tax-free in the Roth account
+      afterward -- standard conversion practice, not an engine invention. A conversion
+      executed at or after `Scenario.rmd_age` is flagged with a warning (not blocked),
+      since Section 7.5 scopes conversions to the retirement-to-RMD window but the PRD
+      doesn't specify enforcement rather than disclosure.
     """
 
     REAL_ESTATE_PURCHASE = "real_estate_purchase"
     REAL_ESTATE_SALE = "real_estate_sale"
     SPENDING_ADJUSTMENT = "spending_adjustment"
+    ROTH_CONVERSION = "roth_conversion"
 
 
 @dataclass
@@ -302,6 +313,19 @@ class Scenario:
     some margin below it. 0.02 reproduces Section 7.3's 4% stress case off the 6%
     baseline; `scenario_library.conservative_returns` remains available separately for
     an explicit "what if returns come in at exactly 4%" comparison.
+
+    The withdrawal/guardrail fields below are Section 7.5. `withdrawal_order` defaults
+    to Section 7.5's own listed order (cash, taxable, tax-deferred, Roth) -- "real
+    estate" is deliberately excluded from the default order and gated behind
+    `allow_real_estate_liquidation_as_last_resort=False` instead, per Section 7.5's own
+    closing line: "Support emergency sale of lake home as an explicit scenario, not an
+    automatic baseline action." `spending_guardrail` selects one of Section 7.5's three
+    named guardrails; `discretionary_cut_fraction` is the fraction of discretionary
+    spending removed under `"discretionary_cuts"` (not specified numerically in the
+    PRD -- an engine-author default). `rmd_age` is the current-law Required Minimum
+    Distribution age (73, per SECURE 2.0 for the baseline household's birth-year
+    cohort); the PRD does not restate it, so it is flagged as an assumption here rather
+    than hard-coded silently in `retirement_readiness.py` or `projection.py`.
     """
 
     name: str
@@ -316,5 +340,12 @@ class Scenario:
     legacy_test_enabled: bool = False
     monte_carlo_enabled: bool = True
     stress_return_haircut: Decimal = Decimal("0.02")
+    withdrawal_order: tuple[str, ...] = ("cash", "taxable", "401k", "roth")
+    withdrawal_strategy: str = "sequential"  # "sequential" | "proportional"
+    spending_guardrail: str = "full_budget"  # "full_budget" | "discretionary_cuts" | "essential_only"
+    discretionary_cut_fraction: Decimal = Decimal("0.5")
+    allow_real_estate_liquidation_as_last_resort: bool = False
+    real_estate_last_resort_property: str = "Lake home"
+    rmd_age: int = 73
     parent_name: Optional[str] = None
     changes: list[AssumptionChange] = field(default_factory=list)

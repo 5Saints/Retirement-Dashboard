@@ -34,7 +34,7 @@ def test_worked_example_matches_design_doc():
     assert abs(result.overall_score - Decimal("73.5")) < Decimal("1")
     assert result.hard_constraint_failed is False
     assert result.achievable is True
-    assert Decimal("50") < result.confidence_percent < Decimal("53")
+    assert Decimal("52") < result.confidence_percent < Decimal("54")
 
 
 def test_hard_constraint_failure_is_forced_when_woa_is_not_achievable():
@@ -105,10 +105,11 @@ def test_cri_score_is_inverse_of_combined_concentration():
 def test_confidence_percent_all_household_inputs_confirmed():
     """The two universal tax placeholders (PRE_RETIREMENT_EFFECTIVE_TAX_RATE,
     TAX_DEFERRED_DISTRIBUTION_TAX_RATE) are module-level constants, not household
-    fields, so they stay Placeholder regardless of what this test confirms -- 9 of the
-    11 material inputs become Confirmed (weight 1.00) and 2 stay Placeholder (weight
-    0.30): (9*1.00 + 2*0.30) / 11 = 87.27%, well above the baseline's mixed-confidence
-    default (see test_worked_example_matches_design_doc)."""
+    fields, so they stay Placeholder regardless of what this test confirms -- 10 of the
+    12 material inputs (4 accounts incl. Roth, 2 liquidity tax rates, 2 real-estate
+    appreciation rates, 2 equity anchors) become Confirmed (weight 1.00) and 2 stay
+    Placeholder (weight 0.30): (10*1.00 + 2*0.30) / 12 = 88.33%, well above the
+    baseline's mixed-confidence default (see test_worked_example_matches_design_doc)."""
     scenario = build_baseline_scenario()
     household = scenario.household
     for account in household.accounts.values():
@@ -125,7 +126,7 @@ def test_confidence_percent_all_household_inputs_confirmed():
 
     result = assumption_confidence_percent(household)
 
-    assert abs(result - Decimal("87.27")) < Decimal("0.01")
+    assert abs(result - Decimal("88.33")) < Decimal("0.01")
 
 
 def test_confidence_percent_all_placeholder_is_30():

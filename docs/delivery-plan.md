@@ -13,7 +13,7 @@ user before the next phase begins.
 | 3. Scenario engine | Clone, override, compare, decision evaluation | Side-by-side decisions operational | **Done -- see scope note** |
 | 4. Monte Carlo | Stochastic returns, inflation, probability outputs | 10,000-run simulation validated | **Done -- see scope note** |
 | 4b. Readiness Score | RRS composite, component display, normalization logic, hard-constraint override | Score reproducible; components visible; failed longevity/essential-spending test forces failure display | **Done -- see scope note** |
-| 5. Tax and withdrawal | Withdrawal sequencing, Roth conversion, tax layers | Tax assumptions visible and testable | Not started |
+| 5. Tax and withdrawal | Withdrawal sequencing, Roth conversion, tax layers | Tax assumptions visible and testable | **Done -- see scope note** |
 | 6a. Recommendation engine: generation | Candidate generation, ranking, full Section 26 output fields | Top-five ranked recommendations with explanations and traces | Not started |
 | 6b. Recommendation engine: history | Statuses, user responses, realized-impact tracking (Section 26.1) | History persisted and queryable | Not started |
 | 7. Legacy and reporting | Estate projections and polished reports | PDF/Excel/CSV exports complete | Not started |
@@ -213,11 +213,64 @@ material input counts equally regardless of dollar size), or configurable normal
 (only the composite *weights* are `Scenario` fields in this pass; Section 25.1 requires the
 weights be configurable and transparent, not the curves).
 
+## Phase 5 scope note
+
+Section 7.4 explicitly permits effective rates for the MVP tax engine ("may use effective
+rates, but the architecture must permit later replacement with a bracket-based federal and
+state tax module"), so this phase's exit criterion -- "tax assumptions visible and testable" --
+is met by making every tax layer explicit and separately reported, not by building a bracket
+engine. What's implemented:
+
+- **Configurable withdrawal order and strategy** (`Scenario.withdrawal_order`,
+  `withdrawal_strategy`): `projection._withdraw_for_spending` now draws from any ordered list of
+  account names, either sequentially (drain each in order, the pre-Phase-5 behavior) or
+  proportionally (`_draw_proportional`: a weighted share of every account with a balance, capping
+  and redistributing across accounts that would otherwise go negative). The default order --
+  `("cash", "taxable", "401k", "roth")` -- is Section 7.5's own listed order verbatim, with "real
+  estate" deliberately left out of the default and gated behind
+  `allow_real_estate_liquidation_as_last_resort=False` instead, per that section's own closing
+  line ("not an automatic baseline action").
+- **A Roth account** (`seed.py`'s `"roth"` bucket, $0 opening balance -- Appendix A doesn't
+  give the baseline household any Roth savings, so this is a zero-effect addition, not an
+  invented balance) and **Roth conversion** (`DecisionType.ROTH_CONVERSION`): moves a gross,
+  pre-tax amount from the 401(k) to the Roth account, taxing the funding source (not the
+  converted amount itself) at the existing distribution-tax placeholder. A conversion at or
+  after the new `Scenario.rmd_age` (73, an engine-author assumption -- current SECURE 2.0 law
+  for the baseline household's birth-year cohort, not restated anywhere in the PRD) is flagged
+  with a warning, not blocked, since Section 7.5 scopes conversions to the retirement-to-RMD
+  window but doesn't specify enforcement.
+- **Spending guardrails** (`Scenario.spending_guardrail`: `full_budget` / `discretionary_cuts` /
+  `essential_only`), reusing the existing essential/discretionary category split
+  (`spending.essential_fraction`, moved there from `retirement_tests.py` to avoid a circular
+  import with `projection.py` -- re-exported from `retirement_tests` for backward compatibility).
+  `discretionary_cut_fraction` (default 50%) is an engine-author default, not a PRD number.
+- **Tax layers visibility**: `PeriodResult` now separately reports `distribution_tax` (401(k)
+  withdrawals, Phase 3), `conversion_tax` (new), and each liquidity event's own `tax` field --
+  three distinct, never-blended tax figures, per Section 7.4's "display gross, estimated tax,
+  and net proceeds separately" and "never hide a tax assumption inside a return assumption."
+
+A pre-existing gap, not introduced by this phase but made more visible by it: `monte_carlo.py`
+has never processed `household.decisions` (real-estate purchase/sale, spending adjustments, and
+now Roth conversions) -- it only tracks each account's opening balance compounding under
+simulated returns plus the deterministic liquidity-event/401(k) inflows. A scenario that relies
+on a Roth conversion to shelter assets will have that decision silently ignored by Monte Carlo,
+understating the simulated Roth balance and its tax-free-withdrawal advantage. The Roth
+account's *opening balance* (and passive growth) is included in the Monte Carlo simulation now;
+active decisions during the simulated horizon are not. Documented here rather than fixed, since
+simulating the full decision set across 10,000 vectorized paths is a substantial undertaking of
+its own.
+
+It deliberately does **not** implement: bracket-based federal/state tax modeling (explicitly
+optional for the MVP per Section 7.4), capital-gain realization limits or tax-bracket-targeted
+withdrawals (Section 7.5 -- would need a cost-basis subsystem this engine doesn't have; taxable-
+account withdrawals remain untaxed at the point of withdrawal, an existing Phase 1
+simplification, unchanged), or forced RMD withdrawal amounts (Section 7.5 only uses the RMD age
+as the Roth-conversion window's boundary, not as its own withdrawal rule).
+
 ## Next checkpoint
 
-Before starting Phase 5 (tax and withdrawal), review with the user: replacing the flat
-effective-rate tax placeholders (Section 7.4) with bracket-based federal/state modeling, the
-Roth-conversion mechanics and eligibility window, and how withdrawal-sequencing configurability
-(Section 7.5: proportional withdrawals, capital-gain realization limits, tax-bracket targets)
-should extend `projection._withdraw_for_spending`'s current fixed cash/taxable/401(k) order
-without breaking the Section 19 golden-file tests that already depend on it.
+Before starting Phase 6a (recommendation engine: generation), review with the user: candidate
+decision generation strategy (which of the Section 8.1/28 built-in scenarios and Phase 3/5
+decision types to search over), the ranking methodology across the Section 26 required output
+fields, and how a recommendation's "expected impact" should reuse `comparison.compare_scenarios`
+rather than duplicating its logic.

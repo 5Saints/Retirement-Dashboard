@@ -235,3 +235,28 @@ def emergency_lake_home_sale(
         effective_date=effective_date,
     )
     return scenario
+
+
+def roth_conversion(
+    parent, amount: Decimal, effective_date: date, funding_source: str = "taxable", recurring: bool = False
+) -> Scenario:
+    """Section 7.5: "Support Roth-conversion scenarios between retirement and required
+    minimum distributions." `amount` is the gross (pre-tax) sum moved from the 401(k)
+    to the Roth account each occurrence; the tax due is paid from `funding_source`, not
+    from the converted amount (see `models.DecisionType.ROTH_CONVERSION`)."""
+    scenario = clone_scenario(parent, "Roth conversion")
+    scenario.household.decisions.append(
+        Decision(
+            DecisionType.ROTH_CONVERSION,
+            effective_date,
+            amount,
+            funding_source=funding_source,
+            recurring_effect=recurring,
+        )
+    )
+    record_change(
+        scenario, "household.decisions[+]", None, amount,
+        "user-specified decision", "Roth conversion built-in scenario (Section 7.5)",
+        effective_date=effective_date,
+    )
+    return scenario
