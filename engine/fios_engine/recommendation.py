@@ -95,6 +95,28 @@ class RecommendationSet:
     candidates_excluded_hard_constraint: int
 
 
+def build_candidate_scenario(
+    baseline: Scenario, kind: str, timing: date, amount: Decimal, funding_source: str
+) -> Scenario:
+    """Dispatches a candidate `kind` (see `CandidateAction.kind`) to the
+    `scenario_library` builder that produces it. Public and reused by
+    `recommendation_history.compute_realized_impact` (Phase 6b) so recomputing a
+    previously-recommended action against a later, updated baseline goes through
+    exactly the same construction path as the original recommendation did, rather
+    than a second, potentially-diverging implementation."""
+    if kind == "roth_conversion":
+        return lib.roth_conversion(baseline, amount, timing, funding_source=funding_source, recurring=True)
+    if kind == "discretionary_cut":
+        return lib.reduce_discretionary_spending(baseline, amount)
+    if kind == "proportional_withdrawal":
+        return lib.use_proportional_withdrawals(baseline)
+    if kind == "real_estate_purchase":
+        return lib.purchase_additional_real_estate(baseline, amount, timing, funding_source=funding_source)
+    if kind == "real_estate_sale":
+        return lib.emergency_lake_home_sale(baseline, timing, funding_source=funding_source)
+    raise ValueError(f"unknown candidate kind: {kind!r}")
+
+
 def _generate_candidates(baseline: Scenario) -> list[CandidateAction]:
     household = baseline.household
     retirement_date = household.retirement_date
@@ -111,8 +133,8 @@ def _generate_candidates(baseline: Scenario) -> list[CandidateAction]:
                 timing=retirement_date,
                 amount=amount,
                 funding_source="taxable",
-                build=lambda b, amount=amount: lib.roth_conversion(
-                    b, amount, b.household.retirement_date, funding_source="taxable", recurring=True
+                build=lambda b, amount=amount: build_candidate_scenario(
+                    b, "roth_conversion", retirement_date, amount, "taxable"
                 ),
             )
         )
@@ -124,9 +146,11 @@ def _generate_candidates(baseline: Scenario) -> list[CandidateAction]:
                 label=f"Reduce discretionary spending by {fraction:.0%}",
                 decision_type=None,
                 timing=retirement_date,
-                amount=Decimal("0"),
+                amount=fraction,
                 funding_source="",
-                build=lambda b, fraction=fraction: lib.reduce_discretionary_spending(b, fraction),
+                build=lambda b, fraction=fraction: build_candidate_scenario(
+                    b, "discretionary_cut", retirement_date, fraction, ""
+                ),
             )
         )
 
@@ -138,7 +162,9 @@ def _generate_candidates(baseline: Scenario) -> list[CandidateAction]:
             timing=retirement_date,
             amount=Decimal("0"),
             funding_source="",
-            build=lambda b: lib.use_proportional_withdrawals(b),
+            build=lambda b: build_candidate_scenario(
+                b, "proportional_withdrawal", retirement_date, Decimal("0"), ""
+            ),
         )
     )
 
@@ -150,8 +176,8 @@ def _generate_candidates(baseline: Scenario) -> list[CandidateAction]:
             timing=real_estate_date,
             amount=REAL_ESTATE_PURCHASE_AMOUNT,
             funding_source="taxable",
-            build=lambda b: lib.purchase_additional_real_estate(
-                b, REAL_ESTATE_PURCHASE_AMOUNT, real_estate_date, funding_source="taxable"
+            build=lambda b: build_candidate_scenario(
+                b, "real_estate_purchase", real_estate_date, REAL_ESTATE_PURCHASE_AMOUNT, "taxable"
             ),
         )
     )
@@ -164,7 +190,9 @@ def _generate_candidates(baseline: Scenario) -> list[CandidateAction]:
             timing=real_estate_date,
             amount=Decimal("0"),
             funding_source="taxable",
-            build=lambda b: lib.emergency_lake_home_sale(b, real_estate_date, funding_source="taxable"),
+            build=lambda b: build_candidate_scenario(
+                b, "real_estate_sale", real_estate_date, Decimal("0"), "taxable"
+            ),
         )
     )
 

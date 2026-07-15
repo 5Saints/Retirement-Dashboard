@@ -260,6 +260,64 @@ class AssumptionChange:
     effective_date: Optional[date] = None
 
 
+class RecommendationStatus(str, Enum):
+    """Section 26.1's required status set, verbatim."""
+
+    ACTIVE = "active"
+    ACCEPTED = "accepted"
+    COMPLETED = "completed"
+    DISMISSED = "dismissed"
+    SUPERSEDED = "superseded"
+    EXPIRED = "expired"
+
+
+@dataclass(frozen=True)
+class RecommendationRecord:
+    """PRD Section 11 `Recommendation` entity / Section 26.1: "Store recommendation
+    date, model version, scenario version, recommendation text, status, user response,
+    expected impact, and realized impact where measurable" and "Retain the original
+    recommendation and assumptions even after the baseline changes."
+
+    This dataclass is the immutable, retained original -- every field is captured once
+    at creation time (`recommendation_history.save_recommendation_set`) and never
+    mutated in place. Status changes, user responses, and realized impact are appended
+    as separate `RecommendationHistoryEntry` rows (Section 11's `RecommendationHistory`
+    entity) rather than overwriting this record, so "the original recommendation and
+    assumptions" stay retrievable exactly as generated even after the status changes or
+    the baseline scenario is later edited.
+    """
+
+    id: str
+    scenario_name: str
+    created_at: date
+    model_version: str
+    scenario_version: str
+    action: str
+    reason: str
+    decision_type: Optional[DecisionType]
+    timing: date
+    amount: Decimal
+    funding_source: str
+    confidence_level: str
+    confidence_score: Decimal
+    invalidation_conditions: list[str]
+    assumptions_snapshot: list[str]
+    expected_impact: dict[str, object]
+    status: RecommendationStatus = RecommendationStatus.ACTIVE
+
+
+@dataclass(frozen=True)
+class RecommendationHistoryEntry:
+    """PRD Section 11 `RecommendationHistory` entity."""
+
+    recommendation_id: str
+    timestamp: date
+    old_status: Optional[RecommendationStatus]
+    new_status: RecommendationStatus
+    user_response: Optional[str] = None
+    realized_impact: Optional[dict[str, object]] = None
+
+
 @dataclass
 class Household:
     name: str

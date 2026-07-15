@@ -15,7 +15,7 @@ user before the next phase begins.
 | 4b. Readiness Score | RRS composite, component display, normalization logic, hard-constraint override | Score reproducible; components visible; failed longevity/essential-spending test forces failure display | **Done -- see scope note** |
 | 5. Tax and withdrawal | Withdrawal sequencing, Roth conversion, tax layers | Tax assumptions visible and testable | **Done -- see scope note** |
 | 6a. Recommendation engine: generation | Candidate generation, ranking, full Section 26 output fields | Top-five ranked recommendations with explanations and traces | **Done -- see scope note** |
-| 6b. Recommendation engine: history | Statuses, user responses, realized-impact tracking (Section 26.1) | History persisted and queryable | Not started |
+| 6b. Recommendation engine: history | Statuses, user responses, realized-impact tracking (Section 26.1) | History persisted and queryable | **Done -- see scope note** |
 | 7. Legacy and reporting | Estate projections and polished reports | PDF/Excel/CSV exports complete | Not started |
 | 8. Integrations | Optional account aggregation and valuation feeds | User-authorized and security-reviewed | Not started |
 
@@ -309,10 +309,54 @@ Accepted, Completed, Dismissed, Superseded, Expired -- user responses, realized-
 tracking): there is no persistence layer yet (no DB/API exists), so `RecommendationHistory`
 tracking has nowhere to live until that infrastructure exists.
 
+## Phase 6b scope note
+
+The prior checkpoint flagged two open questions before this phase; both were resolved during
+implementation and are recorded here rather than left as an unresolved fork:
+
+- **Persistence.** No database or API layer exists anywhere in this engine (Section 7's own
+  "must not depend on the database ORM" boundary implies persistence is a separate concern from
+  the calculation engine, and no infrastructure phase has built one yet). Rather than defer
+  Phase 6b entirely or build a premature database schema, `recommendation_history.py` introduces
+  a small `RecommendationStore` interface with two implementations: `InMemoryRecommendationStore`
+  (process-lifetime) and `JSONFileRecommendationStore` (durable across restarts via a single
+  JSON file, no new dependency). Both satisfy "persisted and queryable" at the fidelity a pure
+  calculation engine can support; a real deployment would swap in a database-backed
+  implementation behind the same interface without touching any caller.
+- **Realized impact.** With no live account-data feed (Section 8 Integrations, not built),
+  "realized impact" cannot mean "compared against observed real-world results." Instead,
+  `compute_realized_impact` rebuilds the *same* candidate action (via
+  `recommendation.build_candidate_scenario`, now public and reused rather than duplicated) against
+  a caller-supplied, presumably-updated baseline scenario, and diffs it the same way the original
+  recommendation was evaluated. This is realized impact *relative to the model*, not relative to
+  measured outcomes -- stated explicitly in the module docstring rather than left implicit, since
+  the two are easy to conflate and only one is possible here.
+
+Also implemented: the full Section 26.1 status lifecycle (`RecommendationStatus`: Active,
+Accepted, Completed, Dismissed, Superseded, Expired) as a validated state machine
+(`ALLOWED_TRANSITIONS`) rather than an unconstrained field -- an invalid transition (e.g.
+Accepted directly to Dismissed) raises rather than silently succeeding. Generating a fresh
+recommendation set for a scenario supersedes that scenario's still-`Active` records
+(`save_recommendation_set`), leaving `Accepted`/`Completed` ones untouched. `expire_stale` moves
+`Active` records past `RECOMMENDATION_TTL_DAYS` (90, an engine-author default -- Section 26.1
+doesn't specify an expiry window) to `Expired`. Section 26.1's "retain the original
+recommendation and assumptions even after the baseline changes" is structural:
+`RecommendationRecord` is frozen and status changes/realized impact are appended as separate
+`RecommendationHistoryEntry` rows rather than mutating the record in place.
+
+`model_version`/`scenario_version` have no formal versioning system to draw from (no release
+pipeline, no `Scenario` version counter): `MODEL_VERSION` is a flat string constant bumped by
+hand per phase, and `scenario_version` is a short content-hash fingerprint of the scenario's own
+`changes` log -- both flagged engine-author choices, not a PRD-specified scheme.
+
+This closes out Phase 6 (6a generation, 6b history) as scoped by CR-006's phase split.
+
 ## Next checkpoint
 
-Before starting Phase 6b (recommendation engine: history), review with the user: whether to
-introduce a minimal in-memory/file-backed persistence shim now (to make history genuinely
-testable) or defer all persistence to a later infrastructure phase, and how "realized impact"
-(comparing a recommendation's predicted effect against what actually happened) should be
-computed without an ongoing time-series of real account data to compare against.
+Before starting Phase 7 (legacy and reporting: estate projections and polished reports), review
+with the user: which export formats to prioritize first (PDF/Excel/CSV are all required by the
+exit criterion), whether "polished reports" implies a templating/rendering dependency this
+engine doesn't have yet (consistent with the numpy precedent from Phase 4, any new dependency
+should be scoped and confirmed before adding it), and how estate/legacy projections already
+computed in `comparison.py` (`legacy_at_75/85/95`) should be extended to the fuller reporting
+detail Section 7 (`Legacy Value`) and Section 13 likely require.
