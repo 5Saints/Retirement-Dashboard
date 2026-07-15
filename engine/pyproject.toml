@@ -1,7 +1,7 @@
 [project]
 name = "fios-engine"
 version = "0.1.0"
-description = "FIOS deterministic financial-planning calculation engine (Phase 1: core engine)"
+description = "FIOS deterministic financial-planning calculation engine (Phase 2: WOA/SAS solver)"
 requires-python = ">=3.11"
 dependencies = []
 

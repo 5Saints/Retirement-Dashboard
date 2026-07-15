@@ -222,9 +222,25 @@ class Household:
 
 @dataclass
 class Scenario:
-    """Phase 1 has exactly one scenario: the baseline. Cloning/overrides are Phase 3."""
+    """Phase 1 has exactly one scenario: the baseline. Cloning/overrides are Phase 3.
+
+    The fields below are the Section 6.2 WOA default thresholds. `stress_return_haircut`
+    is the Phase 2 deterministic stand-in for the Section 8.1 "Conservative returns"
+    built-in scenario: Section 7.3 gives 6% nominal as the default post-retirement
+    balanced return with "stress cases at 4% and 8%", so 0.02 reproduces the 4% stress
+    case as a flat haircut off every invested account's return. The full scenario-clone
+    machinery (Section 8) and Monte Carlo Success Threshold gate (Section 9) are Phases
+    3 and 4; see docs/delivery-plan.md.
+    """
 
     name: str
     household: Household
     retirement_inflation_rate: Decimal = Decimal("0.03")
     accumulation_return_rate: Decimal = Decimal("0.06")
+    success_threshold: Decimal = Decimal("0.90")
+    terminal_age: int = 95
+    legacy_floor: Decimal = Decimal("0")
+    cash_reserve_months: int = 24
+    max_initial_withdrawal_warning: Decimal = Decimal("0.04")
+    legacy_test_enabled: bool = False
+    stress_return_haircut: Decimal = Decimal("0.02")

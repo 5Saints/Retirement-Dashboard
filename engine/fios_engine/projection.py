@@ -39,7 +39,7 @@ from .equity import concentration_risk_index, run_share_ledger
 from .metrics import investable_assets, net_worth, total_assets
 from .models import Scenario, Status, Valued
 from .mortgage import placeholder_payoff_plan
-from .spending import build_schedule
+from .spending import SpendingSchedule, build_schedule
 from .tax import TAX_DEFERRED_DISTRIBUTION_TAX_RATE
 
 PRE_RETIREMENT_EFFECTIVE_TAX_RATE = Valued(
@@ -134,9 +134,23 @@ class ProjectionOutput:
         return matches[-1]
 
 
-def run_projection(scenario: Scenario, terminal_age: int | None = None) -> ProjectionOutput:
+def run_projection(
+    scenario: Scenario,
+    terminal_age: int | None = None,
+    retirement_date: date | None = None,
+    spending_schedule: SpendingSchedule | None = None,
+    return_haircut: Decimal = Decimal("0"),
+) -> ProjectionOutput:
+    """`retirement_date`, `spending_schedule`, and `return_haircut` let the Phase 2
+    solvers (woa_solver.py, sas_solver.py) evaluate a candidate retirement date or
+    candidate spending level without mutating the household's own planned retirement
+    date or the Section 4.9 anchored spending schedule. `return_haircut` is the Section
+    6.1 deterministic stress-test proxy (see models.Scenario.stress_return_haircut);
+    it is subtracted, floored at zero, from every non-cash account's return for the
+    whole horizon, since the engine does not yet model separate pre/post-retirement
+    return regimes (Section 7.3 -- that split is deferred, see delivery-plan.md)."""
     household = scenario.household
-    retirement_date = household.retirement_date
+    retirement_date = retirement_date if retirement_date is not None else household.retirement_date
     horizon_age = terminal_age if terminal_age is not None else household.retirement_horizon_age
     terminal_date = add_months(household.current_date, (horizon_age - household.current_age) * 12)
 
@@ -155,7 +169,8 @@ def run_projection(scenario: Scenario, terminal_age: int | None = None) -> Proje
         )
 
     monthly_rates = {
-        name: acc.annual_return.value / 12 for name, acc in household.accounts.items()
+        name: max(acc.annual_return.value - (return_haircut if acc.tax_treatment != "cash" else Decimal("0")), Decimal("0")) / 12
+        for name, acc in household.accounts.items()
     }
     balances = {name: acc.opening_balance for name, acc in household.accounts.items()}
     mortgage_balance = mortgage.opening_balance
@@ -177,7 +192,8 @@ def run_projection(scenario: Scenario, terminal_age: int | None = None) -> Proje
     salary_stream = next(s for s in household.income_streams if s.name == "Salary")
     bonus_stream = next(s for s in household.income_streams if s.name == "Annual bonus")
 
-    spending_schedule = build_schedule(retirement_date.year, scenario.retirement_inflation_rate)
+    if spending_schedule is None:
+        spending_schedule = build_schedule(retirement_date.year, scenario.retirement_inflation_rate)
 
     periods: list[PeriodResult] = []
     month_index = 0

@@ -8,8 +8,8 @@ user before the next phase begins.
 
 | Phase | Deliverable | Exit Criteria | Status |
 |---|---|---|---|
-| 1. Core engine | Data model, deterministic projection, baseline scenario, consumption residual | All baseline acceptance tests pass (Section 19) | **In progress (this repo)** |
-| 2. WOA and SAS | Candidate-date solver (Section 6.3), spending solver, FID, Freedom Margin, dashboard metrics | WOA, FID, SAS, FM reproducible with trace | Not started |
+| 1. Core engine | Data model, deterministic projection, baseline scenario, consumption residual | All baseline acceptance tests pass (Section 19) | **Done** |
+| 2. WOA and SAS | Candidate-date solver (Section 6.3), spending solver, FID, Freedom Margin, dashboard metrics | WOA, FID, SAS, FM reproducible with trace | **In progress (this repo) -- deterministic solver done, Monte Carlo step deferred (see scope note)** |
 | 3. Scenario engine | Clone, override, compare, decision evaluation | Side-by-side decisions operational | Not started |
 | 4. Monte Carlo | Stochastic returns, inflation, probability outputs | 10,000-run simulation validated | Not started |
 | 4b. Readiness Score | RRS composite, component display, normalization logic, hard-constraint override | Score reproducible; components visible; failed longevity/essential-spending test forces failure display | Not started |
@@ -34,8 +34,42 @@ recommendations, or auth/security infrastructure — those are Phases 2–8 and 
 design/approval pass, per the PRD's own phased structure and the risk of an unreviewable
 all-at-once build for a financial-correctness-critical system.
 
+## Phase 2 scope note
+
+Phase 2 as delivered in this pass implements: the Section 6.2 WOA thresholds as `Scenario`
+fields (`fios_engine/models.py`), the Section 6.1 required tests (`fios_engine/retirement_tests.py`),
+the Section 6.3 solver sequence's coarse-scan-plus-bisection steps and the "Not Achievable"
+terminal case (`fios_engine/woa_solver.py`), the Sustainable Annual Spending bisection solver
+(`fios_engine/sas_solver.py`), and a dashboard-ready bundle of WOA/FID/SAS/Freedom Margin
+(`fios_engine/dashboard.py`). `run_projection` (`fios_engine/projection.py`) gained optional
+candidate-retirement-date, candidate-spending-schedule, and return-haircut parameters so the
+solvers can evaluate a candidate without mutating the household's own planned retirement date
+or the Section 4.9 anchored spending schedule.
+
+Deterministic WOA solve for the baseline scenario runs in well under the 2-second target
+(~0.3s measured); the deterministic solver found the baseline's own $300,000 real spending
+target is *not* sustainable at the planned 2032 (age 59) retirement over a 36-year horizon to
+the Section 6.2 terminal age of 95 -- the solved WOA lands at 2048 instead, and SAS at the
+2032 date is ~$267k rather than $300k. Both are exercised by golden-style tests
+(`tests/test_retirement_tests.py`, `tests/test_woa_solver.py`, `tests/test_sas_solver.py`) so
+this isn't a silent surprise. A property-based test (`tests/test_monotonicity.py`) covers the
+Section 6.3 monotonicity invariant the bisection step depends on.
+
+It deliberately does **not** implement Section 6.3 steps 3-4 (Monte Carlo verification): that
+needs Phase 4's Monte Carlo engine, which doesn't exist yet. `WOAResult.monte_carlo_verified`
+is explicitly `False` and `WOAResult.status` is `Status.PLACEHOLDER` rather than silently
+reporting a verified result. The Section 6.1 "stress test" is implemented as a deterministic
+proxy only: it reruns the candidate with a flat return haircut reproducing Section 7.3's 4%
+post-retirement stress case (`Scenario.stress_return_haircut`), not the full Section 8.1
+"Conservative returns" built-in scenario (which needs the Phase 3 scenario-clone engine) or
+the Monte Carlo Success Threshold gate (Phase 4). It also does not implement scenario
+cloning/overrides, tax brackets, withdrawal sequencing beyond the existing cash/taxable/401k
+order, recommendations, or auth/security infrastructure -- those remain Phases 3-8.
+
 ## Next checkpoint
 
-Before starting Phase 2 (WOA/SAS solver), review with the user: the monotonicity property test
-strategy, the coarse-scan/bisection/Monte-Carlo-verification solver contract (Section 6.3), and
-performance targets (2s deterministic solve, 45s with Monte Carlo verification).
+Before starting Phase 3 (scenario engine), review with the user: the scenario clone/override
+data model (Section 8), how the Section 8.1 built-in scenarios (Conservative returns, market
+decline, lower payout, etc.) compose with the Phase 2 solvers, and whether the deterministic
+stress-test proxy introduced in Phase 2 should be replaced once "Conservative returns" exists
+as a real cloned scenario rather than a flat haircut.
