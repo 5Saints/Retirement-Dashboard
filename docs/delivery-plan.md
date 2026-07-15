@@ -12,7 +12,7 @@ user before the next phase begins.
 | 2. WOA and SAS | Candidate-date solver (Section 6.3), spending solver, FID, Freedom Margin, dashboard metrics | WOA, FID, SAS, FM reproducible with trace | **Done -- Monte Carlo step deferred to Phase 4 (see scope note)** |
 | 3. Scenario engine | Clone, override, compare, decision evaluation | Side-by-side decisions operational | **Done -- see scope note** |
 | 4. Monte Carlo | Stochastic returns, inflation, probability outputs | 10,000-run simulation validated | **Done -- see scope note** |
-| 4b. Readiness Score | RRS composite, component display, normalization logic, hard-constraint override | Score reproducible; components visible; failed longevity/essential-spending test forces failure display | Not started |
+| 4b. Readiness Score | RRS composite, component display, normalization logic, hard-constraint override | Score reproducible; components visible; failed longevity/essential-spending test forces failure display | **Done -- see scope note** |
 | 5. Tax and withdrawal | Withdrawal sequencing, Roth conversion, tax layers | Tax assumptions visible and testable | Not started |
 | 6a. Recommendation engine: generation | Candidate generation, ranking, full Section 26 output fields | Top-five ranked recommendations with explanations and traces | Not started |
 | 6b. Recommendation engine: history | Statuses, user responses, realized-impact tracking (Section 26.1) | History persisted and queryable | Not started |
@@ -177,9 +177,47 @@ It deliberately does **not** implement: variable longevity or healthcare shocks 
 phases" per Section 9 itself), correlated *multi*-asset-class returns (only one shared portfolio
 factor, see above), or the Retirement Readiness Score's probability component (Phase 4b, next).
 
+## Phase 4b scope note
+
+Section 23 explicitly requires a design document before this phase begins ("Deliver the RRS
+normalization specification as a design document before phase 4b begins," reiterated by
+CR-006); `docs/rrs-normalization-spec.md` is that deliverable, written and reviewed as part of
+this phase's own implementation commit -- the same pattern Phase 1 used for its architecture/
+ERD/calc-spec/threat-model documents. `fios_engine/retirement_readiness.py` implements exactly
+that spec: no formula in the module exists that isn't first written down and justified there.
+
+The five Section 25.1 components (Work-Optional Age progress 35%, Retirement Success
+Probability 30%, Freedom Margin 20%, Liquidity Coverage 10%, Concentration Risk 5%) are
+normalized as follows -- full rationale in the spec, not repeated here: WOA progress against the
+solver's own search window (`woa_solver.last_search_date`, promoted from a private helper for
+this reuse); RSP linearly below the Success Threshold per Section 25.1's explicit 100-at-
+threshold boundary; Freedom Margin as a percentage of desired spending clamped to a +/-50% band;
+Liquidity Coverage against double the Section 6.2 cash-reserve minimum; Concentration Risk as
+inverse combined equity-plus-real-estate exposure over net worth (deliberately broader than,
+and never conflated with, the existing equity-only Section 6.1 concentration *test*).
+
+The Section 25.1 hard-constraint override ("must not conceal failed hard constraints") is
+`RRSResult.hard_constraint_failed`/`hard_constraint_detail`, driven by the same
+`longevity_test`/`spending_test` outcomes already computed for the WOA solver's own candidate
+(no redundant re-run) -- forced `True` whenever WOA is Not Achievable, since that is itself
+already a failure of those same tests across the entire search window. The Section 25.1/27
+assumption-confidence adjustment (`assumption_confidence_percent`) walks every material
+`Valued`/placeholder input already flagged Confirmed/Assumption/Placeholder/Estimated/Derived
+elsewhere in the engine, using per-status weights that -- like the normalization curves
+themselves -- are an engine-author assumption the PRD does not specify numerically (spec
+Section 5).
+
+It deliberately does **not** implement: individual-security concentration (Section 25's third
+CRI input -- no such entity exists in this engine), materiality-weighted confidence (each
+material input counts equally regardless of dollar size), or configurable normalization curves
+(only the composite *weights* are `Scenario` fields in this pass; Section 25.1 requires the
+weights be configurable and transparent, not the curves).
+
 ## Next checkpoint
 
-Before starting Phase 4b (Retirement Readiness Score), review with the user: the RRS
-normalization specification (Section 23 explicitly requires this as a design document before
-4b begins), the component weighting (Section 25.1), and the hard-constraint override behavior
-when longevity/essential-spending tests fail.
+Before starting Phase 5 (tax and withdrawal), review with the user: replacing the flat
+effective-rate tax placeholders (Section 7.4) with bracket-based federal/state modeling, the
+Roth-conversion mechanics and eligibility window, and how withdrawal-sequencing configurability
+(Section 7.5: proportional withdrawals, capital-gain realization limits, tax-bracket targets)
+should extend `projection._withdraw_for_spending`'s current fixed cash/taxable/401(k) order
+without breaking the Section 19 golden-file tests that already depend on it.

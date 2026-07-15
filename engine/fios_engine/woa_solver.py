@@ -62,7 +62,7 @@ def _month_diff(a: date, b: date) -> int:
     return (b.year - a.year) * 12 + (b.month - a.month)
 
 
-def _last_search_date(scenario: Scenario) -> date:
+def last_search_date(scenario: Scenario) -> date:
     household = scenario.household
     months_to_terminal = (scenario.terminal_age - household.current_age) * 12
     months_to_boundary = max(months_to_terminal - scenario.cash_reserve_months, 0)
@@ -89,7 +89,7 @@ def solve_woa(
 ) -> WOAResult:
     household = scenario.household
     earliest_candidate = household.current_date
-    last_candidate = _last_search_date(scenario)
+    last_candidate = last_search_date(scenario)
 
     trace: list[WOACandidate] = []
 
