@@ -17,7 +17,7 @@ user before the next phase begins.
 | 6a. Recommendation engine: generation | Candidate generation, ranking, full Section 26 output fields | Top-five ranked recommendations with explanations and traces | **Done -- see scope note** |
 | 6b. Recommendation engine: history | Statuses, user responses, realized-impact tracking (Section 26.1) | History persisted and queryable | **Done -- see scope note** |
 | 7. Legacy and reporting | Estate projections and polished reports | PDF/Excel/CSV exports complete | **Done -- see scope note** |
-| 8. Integrations | Optional account aggregation and valuation feeds | User-authorized and security-reviewed | Not started |
+| 8. Integrations | Optional account aggregation and valuation feeds | User-authorized and security-reviewed | **Partial -- see scope note (manual valuation-feed adapter only; live aggregation deferred per Section 3.2)** |
 
 ## Phase 1 scope note
 
@@ -425,16 +425,46 @@ existing behavior.
 
 This closes out Phase 7 (legacy and reporting) per Section 21's phase list.
 
+## Phase 8 scope note
+
+The prior checkpoint raised a genuine architectural fork (Phase 8 is not a calculation-engine
+feature the way Phases 1-7 were) and was resolved with the user before writing any code: scope
+Phase 8 down to whatever fits inside this pure, dependency-free calculation library, and leave
+everything that requires an API/database/auth layer -- which this project has never built --
+explicitly deferred rather than half-built.
+
+Section 3.2 ("Deferred or Optional") already lists "Live brokerage aggregation" as out of scope,
+which settles the harder half of Phase 8 on its own: there is no vendor connection (Plaid/
+Yodlee/MX-style OAuth aggregation), no credential of any kind, and no network call anywhere in
+this phase's code. What remains inside Phase 8's own description -- "valuation feeds" -- is
+implemented as a manual-import adapter: `valuation_feed.py` is new, with an `AccountSnapshot`
+record (`account_name`, `balance`, `as_of`, `source`, `status`), `parse_csv_snapshots`/
+`parse_json_snapshots` to read externally-supplied balances (e.g. a user's manually exported
+brokerage CSV) into that record, and `apply_valuation_feed(baseline, snapshots, scenario_name)`
+to fold them into a *cloned* scenario -- the same clone-then-`record_change` pattern every
+`scenario_library` builder already uses, so the resulting scenario carries a full Section 28
+audit trail (one `AssumptionChange` per updated account, `effective_date` set to the snapshot's
+`as_of`) rather than mutating account balances in place with no history. An unrecognized account
+name in the feed raises rather than silently defaulting (Section 18), while a feed covering only
+a subset of accounts is accepted as normal, and a repeated account across snapshots resolves to
+its latest `as_of`. Section 15's "do not store account passwords or brokerage credentials"
+requirement is satisfied trivially -- this module never handles a credential of any kind, since
+there is no live connection to authenticate.
+
+Tests: `test_valuation_feed.py` (CSV/JSON parsing, the clone-not-mutate guarantee, the audit
+trail, unknown-account rejection, and latest-snapshot-wins for a repeated account). Full suite
+green (148 tests).
+
+This is a deliberately partial close of Phase 8: the exit criterion's "user-authorized and
+security-reviewed" language presumes the live-aggregation half this phase note (and Section 3.2)
+defers. Nothing here should be read as satisfying that half.
+
 ## Next checkpoint
 
-Phase 8 (Integrations: optional account aggregation and valuation feeds, user-authorized and
-security-reviewed) is qualitatively different from every phase so far -- it is not a calculation-
-engine feature at all. Section 16's own architecture boundary ("the calculation engine must not
-depend on the web framework, database ORM, or UI") means account aggregation, credential
-handling, and authorization review belong to an API/persistence layer this project has
-deliberately never built (`recommendation_history.py`'s two in-process/JSON-file stores are the
-closest thing that exists, and even those were flagged as stand-ins for a real database).
-Before starting Phase 8, review with the user whether it makes sense to build inside this
-pure-calculation-engine repository at all, or whether it should wait for the API/database layer
-Section 16 recommends -- committing to an aggregation vendor and an auth/security model are real
-architectural decisions, not engine-author assumptions to flag and proceed past.
+What remains of Phase 8 -- live account aggregation, vendor selection, OAuth/credential
+handling, and the security review Section 15 requires -- still cannot proceed without the
+API/persistence/auth layer Section 16 recommends (FastAPI + PostgreSQL + managed identity
+provider), none of which exist in this repository. That remains a real infrastructure and
+vendor commitment to make with the user explicitly, not something to scope down further inside
+the calculation engine. Absent that, Phases 1-8 (as scoped here) represent the calculation
+engine's complete feature set per Section 21's phase list.

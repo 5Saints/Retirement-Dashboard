@@ -1,7 +1,7 @@
 [project]
 name = "fios-engine"
 version = "0.1.0"
-description = "FIOS financial-planning calculation engine (Phase 7: legacy value and reporting)"
+description = "FIOS financial-planning calculation engine (Phase 8: manual valuation-feed adapter)"
 requires-python = ">=3.11"
 dependencies = [
     # Monte Carlo only (Section 9) -- a deliberate, scoped exception to the engine's
