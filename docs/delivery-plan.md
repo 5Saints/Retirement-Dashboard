@@ -14,7 +14,7 @@ user before the next phase begins.
 | 4. Monte Carlo | Stochastic returns, inflation, probability outputs | 10,000-run simulation validated | **Done -- see scope note** |
 | 4b. Readiness Score | RRS composite, component display, normalization logic, hard-constraint override | Score reproducible; components visible; failed longevity/essential-spending test forces failure display | **Done -- see scope note** |
 | 5. Tax and withdrawal | Withdrawal sequencing, Roth conversion, tax layers | Tax assumptions visible and testable | **Done -- see scope note** |
-| 6a. Recommendation engine: generation | Candidate generation, ranking, full Section 26 output fields | Top-five ranked recommendations with explanations and traces | Not started |
+| 6a. Recommendation engine: generation | Candidate generation, ranking, full Section 26 output fields | Top-five ranked recommendations with explanations and traces | **Done -- see scope note** |
 | 6b. Recommendation engine: history | Statuses, user responses, realized-impact tracking (Section 26.1) | History persisted and queryable | Not started |
 | 7. Legacy and reporting | Estate projections and polished reports | PDF/Excel/CSV exports complete | Not started |
 | 8. Integrations | Optional account aggregation and valuation feeds | User-authorized and security-reviewed | Not started |
@@ -267,10 +267,52 @@ account withdrawals remain untaxed at the point of withdrawal, an existing Phase
 simplification, unchanged), or forced RMD withdrawal amounts (Section 7.5 only uses the RMD age
 as the Roth-conversion window's boundary, not as its own withdrawal rule).
 
+## Phase 6a scope note
+
+`fios_engine/recommendation.py` generates a pool of nine actionable candidates from the
+existing Phase 3/5 `scenario_library` builders and `Decision` types -- three Roth-conversion
+amounts, three discretionary-spending-cut fractions, a switch to proportional withdrawals, an
+additional real-estate purchase, and an emergency lake-home sale (all engine-author choices of
+amount/percentage grid, flagged the same as any other reasonable default already in the
+codebase, e.g. `Scenario.discretionary_cut_fraction`) -- evaluates each via
+`comparison.diff_snapshots`, and returns the top five ranked per Section 26's stated
+optimization order.
+
+Two design points worth recording:
+
+- **Reused, not duplicated, existing machinery.** `comparison.snapshot` and
+  `retirement_readiness.compute_rrs` both independently called `compute_dashboard_summary`
+  (each triggering a full `solve_woa` + Monte Carlo solve), so evaluating N candidates the naive
+  way would solve WOA/Monte Carlo up to 3N+3 times instead of N+1. Both functions now accept an
+  optional precomputed `summary: DashboardSummary`, and `compare_scenarios`'s diffing arithmetic
+  was extracted into a standalone `diff_snapshots` so a caller ranking many candidates against
+  one baseline (this module) computes the baseline's own solve exactly once.
+- **Ranking is a lexicographic sort, not a weighted score.** Section 26 states an "optimization
+  order" (earliest WOA/FID, then required RSP, then desired lifestyle/Freedom Margin, then tax
+  efficiency, then liquidity resilience), which is a priority *sequence*, not a formula -- so
+  `_ranking_key` sorts on that exact tuple of fields instead of computing a blended score.
+  Estate value is deliberately excluded from the sort key ("then informational estate value").
+- **The Section 26 hard-constraint rule is enforced structurally.** "Must never recommend a
+  materially earlier retirement if the configured Success Threshold or essential-spending floor
+  is violated" falls directly out of `woa_solver.solve_woa`'s own contract: it only reports a
+  candidate achievable once the deterministic longevity/essential-spending tests pass and (with
+  Monte Carlo enabled) the simulated success probability clears the threshold. A subtlety caught
+  by the test suite, not assumed: `comparison.snapshot` falls back to the household's own
+  planned retirement date when WOA is Not Achievable (so callers always have *some* date to
+  display informationally), so the exclusion check in `recommendation.py` reads
+  `DashboardSummary.woa.achievable` directly rather than testing `MetricSnapshot.evaluated_at is
+  None` -- the latter is never `None` because of that same fallback, and would have silently let
+  every hard-constraint-violating candidate through.
+
+It deliberately does **not** implement Phase 6b (recommendation history: statuses -- Active,
+Accepted, Completed, Dismissed, Superseded, Expired -- user responses, realized-impact
+tracking): there is no persistence layer yet (no DB/API exists), so `RecommendationHistory`
+tracking has nowhere to live until that infrastructure exists.
+
 ## Next checkpoint
 
-Before starting Phase 6a (recommendation engine: generation), review with the user: candidate
-decision generation strategy (which of the Section 8.1/28 built-in scenarios and Phase 3/5
-decision types to search over), the ranking methodology across the Section 26 required output
-fields, and how a recommendation's "expected impact" should reuse `comparison.compare_scenarios`
-rather than duplicating its logic.
+Before starting Phase 6b (recommendation engine: history), review with the user: whether to
+introduce a minimal in-memory/file-backed persistence shim now (to make history genuinely
+testable) or defer all persistence to a later infrastructure phase, and how "realized impact"
+(comparing a recommendation's predicted effect against what actually happened) should be
+computed without an ongoing time-series of real account data to compare against.

@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
-from .dashboard import compute_dashboard_summary
+from .dashboard import DashboardSummary, compute_dashboard_summary
 from .models import Scenario, Status
 from .monte_carlo import run_monte_carlo
 from .projection import ProjectionOutput, add_months, run_projection
@@ -75,10 +75,15 @@ def _cumulative_tax(projection: ProjectionOutput) -> Decimal:
     return total
 
 
-def snapshot(scenario: Scenario, retirement_date: date | None = None) -> MetricSnapshot:
+def snapshot(
+    scenario: Scenario, retirement_date: date | None = None, summary: DashboardSummary | None = None
+) -> MetricSnapshot:
     """With `retirement_date=None` (default), solves this scenario's own WOA and
     evaluates at that date -- the right comparison for an assumption-only scenario
     (returns, inflation, tax, spending scale): "how does this change move my WOA?".
+    Pass a precomputed `summary` to skip re-solving WOA/Monte Carlo when a caller (e.g.
+    `retirement_readiness.compute_rrs`, `recommendation.py`) already has one for this
+    scenario.
 
     Passing an explicit `retirement_date` instead evaluates the scenario AT that fixed
     date without re-solving WOA -- required for a retirement-timing decision (e.g.
@@ -86,7 +91,8 @@ def snapshot(scenario: Scenario, retirement_date: date | None = None) -> MetricS
     date independent of `household.planned_retirement_age` and would otherwise report
     the same solved WOA for every such scenario, masking the decision entirely."""
     if retirement_date is None:
-        summary = compute_dashboard_summary(scenario)
+        if summary is None:
+            summary = compute_dashboard_summary(scenario)
         retirement_date = summary.fid if summary.fid is not None else scenario.household.retirement_date
         sas_value = summary.sas.sustainable_spending if summary.sas is not None else None
         freedom_margin = summary.freedom_margin
@@ -170,21 +176,16 @@ def _month_diff(a: date, b: date) -> int:
     return (b.year - a.year) * 12 + (b.month - a.month)
 
 
-def compare_scenarios(
-    baseline: Scenario,
-    alternative: Scenario,
-    baseline_retirement_date: date | None = None,
-    alternative_retirement_date: date | None = None,
+def diff_snapshots(
+    baseline_snapshot: MetricSnapshot,
+    alternative_snapshot: MetricSnapshot,
+    baseline_mc_enabled: bool,
+    alternative_mc_enabled: bool,
 ) -> ScenarioComparison:
-    """`*_retirement_date` overrides let a caller pin either side's evaluation date
-    instead of re-solving WOA -- see `snapshot`'s docstring. A retirement-timing
-    decision (`scenario_library.retire_at_age`) should pass
-    `alternative_retirement_date=alternative.household.retirement_date` so the
-    comparison reflects "what if I retire at this specific age" rather than
-    re-discovering the same solved WOA on both sides."""
-    baseline_snapshot = snapshot(baseline, baseline_retirement_date)
-    alternative_snapshot = snapshot(alternative, alternative_retirement_date)
-
+    """The comparison arithmetic, factored out of `compare_scenarios` so a caller that
+    already has a precomputed baseline snapshot (e.g. `recommendation.py`, ranking many
+    candidates against the *same* baseline) doesn't pay to re-solve the baseline's own
+    WOA/Monte Carlo once per candidate."""
     woa_impact = (
         _month_diff(baseline_snapshot.evaluated_at, alternative_snapshot.evaluated_at)
         if baseline_snapshot.evaluated_at and alternative_snapshot.evaluated_at
@@ -228,11 +229,7 @@ def compare_scenarios(
         else None
     )
 
-    status = (
-        Status.CONFIRMED
-        if baseline.monte_carlo_enabled and alternative.monte_carlo_enabled
-        else Status.PLACEHOLDER
-    )
+    status = Status.CONFIRMED if baseline_mc_enabled and alternative_mc_enabled else Status.PLACEHOLDER
     return ScenarioComparison(
         baseline=baseline_snapshot,
         alternative=alternative_snapshot,
@@ -246,6 +243,25 @@ def compare_scenarios(
         success_probability_before=baseline_snapshot.success_probability,
         success_probability_after=alternative_snapshot.success_probability,
         status=status,
+    )
+
+
+def compare_scenarios(
+    baseline: Scenario,
+    alternative: Scenario,
+    baseline_retirement_date: date | None = None,
+    alternative_retirement_date: date | None = None,
+) -> ScenarioComparison:
+    """`*_retirement_date` overrides let a caller pin either side's evaluation date
+    instead of re-solving WOA -- see `snapshot`'s docstring. A retirement-timing
+    decision (`scenario_library.retire_at_age`) should pass
+    `alternative_retirement_date=alternative.household.retirement_date` so the
+    comparison reflects "what if I retire at this specific age" rather than
+    re-discovering the same solved WOA on both sides."""
+    baseline_snapshot = snapshot(baseline, baseline_retirement_date)
+    alternative_snapshot = snapshot(alternative, alternative_retirement_date)
+    return diff_snapshots(
+        baseline_snapshot, alternative_snapshot, baseline.monte_carlo_enabled, alternative.monte_carlo_enabled
     )
 
 

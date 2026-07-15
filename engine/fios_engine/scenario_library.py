@@ -260,3 +260,17 @@ def roth_conversion(
         effective_date=effective_date,
     )
     return scenario
+
+
+def use_proportional_withdrawals(parent) -> Scenario:
+    """Section 7.5: "Allow proportional withdrawals across accounts." A zero-cost
+    mechanical change (no dollar amount, no funding source) rather than a financial
+    decision, useful as a free candidate in the recommendation engine (Phase 6a)."""
+    scenario = clone_scenario(parent, "Proportional withdrawals")
+    old = scenario.withdrawal_strategy
+    scenario.withdrawal_strategy = "proportional"
+    record_change(
+        scenario, "scenario.withdrawal_strategy", old, "proportional",
+        "user-specified decision", "Proportional withdrawal built-in scenario (Section 7.5)",
+    )
+    return scenario

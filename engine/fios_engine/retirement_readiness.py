@@ -11,7 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from decimal import Decimal
 
-from .dashboard import compute_dashboard_summary
+from .dashboard import DashboardSummary, compute_dashboard_summary
 from .models import Household, Scenario, Status
 from .mortgage import placeholder_payoff_plan
 from .projection import PRE_RETIREMENT_EFFECTIVE_TAX_RATE, run_projection
@@ -139,9 +139,14 @@ def assumption_confidence_percent(household: Household) -> Decimal:
     return Decimal("100") * total / len(statuses)
 
 
-def compute_rrs(scenario: Scenario) -> RRSResult:
+def compute_rrs(scenario: Scenario, summary: DashboardSummary | None = None) -> RRSResult:
+    """Pass a precomputed `summary` (e.g. from `dashboard.compute_dashboard_summary`) to
+    avoid re-solving WOA/Monte Carlo when a caller already has one -- `recommendation.py`
+    ranks several candidates against the same scenario and would otherwise pay for the
+    solve twice per candidate."""
     household = scenario.household
-    summary = compute_dashboard_summary(scenario)
+    if summary is None:
+        summary = compute_dashboard_summary(scenario)
     woa = summary.woa
 
     evaluation_date = woa.candidate_date if woa.candidate_date is not None else household.retirement_date
