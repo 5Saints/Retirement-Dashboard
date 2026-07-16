@@ -76,12 +76,31 @@ FID, SAS, Freedom Margin, pass/fail tests, and Monte Carlo are Phase 2+.
 - **Auditability**: every calculation is traceable to inputs and formulas (PRD Section 18)
   because the engine has no hidden state — it is scenario-in, result-out.
 
-## Planned layers (not yet built)
+## Planned layers
 
 | Layer | Recommendation | Notes |
 |---|---|---|
-| API | FastAPI | Wraps engine calls in versioned REST endpoints (Section 17.1) |
-| Database | PostgreSQL | Persists Household/Scenario/ProjectionResult entities (Section 11) |
-| Frontend | React/TypeScript | Dashboard, scenario comparison UI (Section 12, 13) |
-| Jobs | Celery/RQ | Monte Carlo (Section 9) and report generation (Section 14) |
-| Auth | Managed identity provider | MFA, RBAC (Section 15) |
+| API | FastAPI | **Minimal version built** (`api/fios_api`) -- wraps engine calls in Section 17.1's endpoints. No versioning, no DB, no auth yet; see below. |
+| Database | PostgreSQL | Not built. `api/fios_api/store.py`'s `ScenarioStore` is an in-memory stand-in that loses state on restart -- explicitly not this layer. |
+| Frontend | React/TypeScript | Not built. |
+| Jobs | Celery/RQ | Not built. The minimal API runs Monte Carlo/reports synchronously in the request; fine for a prototype, not for production request latency. |
+| Auth | Managed identity provider | Not built. The minimal API has no authentication, authorization, or session handling of any kind -- every endpoint is open. |
+
+## Minimal API layer (`api/fios_api`)
+
+A deliberately small FastAPI service wrapping `fios_engine`, built to make Section 17.1's
+endpoints callable over HTTP without committing to the full stack above in one step (that
+remains a separate, larger decision). Every endpoint delegates to an existing engine function
+(`reporting.py`'s builders, `report_export.py`'s exporters, `dashboard.compute_dashboard_summary`,
+`monte_carlo.run_monte_carlo`, `comparison.compare_scenarios`, `scenario_engine.clone_scenario`) --
+no calculation logic lives in the API layer itself, matching "Reuse: the same engine will back
+the future web API... without modification" above. `fios_engine/json_encoding.py`'s
+`FiosJSONEncoder` keeps every JSON response exact (Decimal as string, never coerced through
+float) rather than relying on FastAPI's own encoder, which would silently reintroduce the
+float-rounding this engine avoids everywhere else.
+
+Explicitly out of scope for this minimal version, by design: real persistence (`ScenarioStore` is
+in-memory only, reset on restart), authentication of any kind, request versioning, async job
+queues for long-running Monte Carlo/report calls, and a schema for arbitrary user-submitted
+scenarios (the store only holds the seeded baseline and its built-in variants plus whatever a
+caller clones at runtime).

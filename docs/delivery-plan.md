@@ -459,12 +459,72 @@ This is a deliberately partial close of Phase 8: the exit criterion's "user-auth
 security-reviewed" language presumes the live-aggregation half this phase note (and Section 3.2)
 defers. Nothing here should be read as satisfying that half.
 
+## Minimal API layer (post-Phase-8, Section 16/17)
+
+Section 21's eight phases are all calculation-engine work; this is the first step into the
+layers above it (Section 16: API, database, frontend, jobs, auth), scoped down deliberately with
+the user before starting, the same way Phase 8 was: build only the minimal API layer (Section
+17.1's endpoints, wrapping existing engine functions, no persistence/auth/frontend), rather than
+committing to the full stack or writing a design doc with no runnable code.
+
+`api/fios_api` is new, alongside `engine/`: a FastAPI app (`main.py`, factory function
+`create_app()`) implementing Section 17.1's eight endpoints plus one addition (`GET /scenarios`,
+needed just to discover what's in the store at all) --
+
+- `POST /scenarios/{id}/calculate` -- WOA/FID/SAS/Freedom Margin/success probability
+  (`dashboard.compute_dashboard_summary`), RRS (`retirement_readiness.compute_rrs`), risk/
+  liquidity/legacy/tax metrics (`comparison.snapshot`), and Legacy Value (`estate.legacy_values`)
+  -- Section 17's "minimum engine output" in one call.
+- `POST /scenarios/{id}/monte-carlo` -- `monte_carlo.run_monte_carlo` directly.
+- `POST /scenarios/{id}/decisions/evaluate` -- clones the scenario, appends a caller-supplied
+  `Decision` to `Household.decisions`, and diffs it against the baseline via
+  `comparison.compare_scenarios`/`what_changed` -- exactly the Section 8.2 Decision Output flow,
+  now reachable over HTTP.
+- `GET /scenarios/{id}/dashboard` / `GET /scenarios/{id}/projection` -- `reporting.py`'s
+  `executive_summary`/`annual_projection_table` builders, unmodified.
+- `POST /scenarios/{id}/clone` -- `scenario_engine.clone_scenario` (Section 12: "clone a scenario
+  before editing").
+- `POST /reports` -- dispatches to any of `reporting.py`'s twelve builders and any of
+  `report_export.py`'s four exporters by name; this single endpoint is the entire Section 14
+  reporting surface exposed over HTTP with no new logic.
+- `GET /audit-events` -- flattens `Scenario.changes` across the store (or one scenario, via
+  `?scenario_id=`).
+
+No calculation logic lives in `api/fios_api` -- every endpoint is a thin wrapper, which is the
+whole point of `docs/architecture.md`'s "the same engine will back the future web API... without
+modification" claim finally being exercised. The one new piece of real logic is
+`fios_engine/json_encoding.py`'s `FiosJSONEncoder`, promoted out of `report_export.py`'s
+previously-private encoder: FastAPI's own default JSON encoder converts `Decimal` to `int`/
+`float`, which would silently reintroduce the float-rounding this engine has avoided everywhere
+else, so every endpoint returns its own encoder's output directly rather than letting FastAPI
+re-encode it.
+
+**Explicitly not built, by design** (scoped with the user before starting, same as Phase 8's
+manual-adapter decision): a real database (`api/fios_api/store.py`'s `ScenarioStore` is
+in-memory, reset on restart, and documented as such in its own module docstring), authentication
+of any kind (Section 15 is entirely unaddressed -- every endpoint is open), request versioning,
+async job queues for Monte Carlo/report generation (they run synchronously in the request, fine
+for a prototype, not for production latency), and a frontend. `docs/architecture.md`'s "Planned
+layers" table is updated to mark exactly this much as built and no more.
+
+One input-validation gap the API's own test suite caught: a `Decision` whose `funding_source` (or
+`description`, for a real-estate sale) doesn't name a real account/property previously surfaced
+as a raw, unhandled `KeyError` (a 500) deep inside `run_projection` -- Section 18's "never
+silently default" is an engine-internal guarantee, but a malformed *external* request deserves a
+clean 4xx, not a crash. `POST /scenarios/{id}/decisions/evaluate` now catches that `KeyError` at
+the API boundary and returns 422 with the offending key named.
+
+Tests: `api/tests/test_api.py`, 24 tests covering all nine endpoints, exact-Decimal JSON encoding
+(no float ever appears for a financial figure), all four export formats, the clone/409/404 paths,
+store isolation across separate `create_app()` instances, and the funding-source validation fix
+above. Engine suite unaffected (148 tests still pass) -- confirms the `report_export.py` encoder
+promotion was behavior-preserving.
+
 ## Next checkpoint
 
-What remains of Phase 8 -- live account aggregation, vendor selection, OAuth/credential
-handling, and the security review Section 15 requires -- still cannot proceed without the
-API/persistence/auth layer Section 16 recommends (FastAPI + PostgreSQL + managed identity
-provider), none of which exist in this repository. That remains a real infrastructure and
-vendor commitment to make with the user explicitly, not something to scope down further inside
-the calculation engine. Absent that, Phases 1-8 (as scoped here) represent the calculation
-engine's complete feature set per Section 21's phase list.
+The rest of Section 16's stack -- real persistence, authentication, a frontend, async job queues
+-- remains a real infrastructure and vendor commitment for the user to make explicitly, not
+something to scope down further. What remains of Phase 8 (live account aggregation, OAuth/
+credential handling, the Section 15 security review) is still blocked on that same layer. Absent
+either, the calculation engine (Phases 1-8) plus this minimal API layer represent the project's
+current complete, tested surface.
