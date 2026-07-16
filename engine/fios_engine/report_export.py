@@ -17,7 +17,6 @@ from __future__ import annotations
 import csv
 import io
 import json
-from datetime import date, datetime
 from decimal import Decimal
 
 from openpyxl import Workbook
@@ -26,16 +25,8 @@ from reportlab.lib.pagesizes import LETTER
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
+from .json_encoding import FiosJSONEncoder
 from .reporting import Report
-
-
-class _ReportJSONEncoder(json.JSONEncoder):
-    def default(self, obj):
-        if isinstance(obj, Decimal):
-            return str(obj)
-        if isinstance(obj, (date, datetime)):
-            return obj.isoformat()
-        return super().default(obj)
 
 
 def export_json(report: Report) -> str:
@@ -49,7 +40,7 @@ def export_json(report: Report) -> str:
         },
         "sections": [{"heading": section.heading, "rows": section.rows} for section in report.sections],
     }
-    return json.dumps(payload, indent=2, cls=_ReportJSONEncoder)
+    return json.dumps(payload, indent=2, cls=FiosJSONEncoder)
 
 
 def export_csv(report: Report) -> str:
