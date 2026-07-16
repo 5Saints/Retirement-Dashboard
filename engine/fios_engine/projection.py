@@ -27,6 +27,18 @@ as an explicit assumption, not guessed silently") rather than silently invented:
   age-50 and age 60-63 catch-ups (CL-3) stored in a configurable table. Real statutory
   limits are only published a year or two ahead; out-year figures here are a placeholder
   indexing assumption, not confirmed IRS data.
+
+Step 4's withdrawal mechanics implement Section 7.5 (Phase 5): `_withdraw_for_spending`
+draws from `scenario.withdrawal_order` sequentially or proportionally
+(`scenario.withdrawal_strategy`), after `_guardrail_adjusted_target` applies whichever
+spending guardrail is configured (full budget / discretionary cuts / essential only),
+and falls back to liquidating `scenario.real_estate_last_resort_property` only if that
+fallback is explicitly enabled. Not implemented: bracket-based federal/state tax
+(Section 7.4 explicitly permits effective rates for the MVP), capital-gain realization
+limits and tax-bracket-targeted withdrawals (would need a cost-basis subsystem the
+engine doesn't have), and forced RMD withdrawal amounts (Section 7.5 only uses the RMD
+age as the Roth-conversion window's boundary, not as its own withdrawal rule) -- see
+delivery-plan.md's Phase 5 scope note.
 """
 
 from __future__ import annotations
@@ -37,9 +49,10 @@ from decimal import Decimal
 
 from .equity import concentration_risk_index, run_share_ledger
 from .metrics import investable_assets, net_worth, total_assets
-from .models import Scenario, Status, Valued
+from .models import DecisionType, Scenario, Status, Valued
+from .money import CENT
 from .mortgage import placeholder_payoff_plan
-from .spending import build_schedule
+from .spending import SpendingSchedule, build_schedule, essential_fraction
 from .tax import TAX_DEFERRED_DISTRIBUTION_TAX_RATE
 
 PRE_RETIREMENT_EFFECTIVE_TAX_RATE = Valued(
@@ -113,6 +126,8 @@ class PeriodResult:
     investable_assets: Decimal
     concentration_vs_net_worth: Decimal
     concentration_vs_investable: Decimal
+    distribution_tax: Decimal = Decimal("0")
+    conversion_tax: Decimal = Decimal("0")
     warnings: list[str] = field(default_factory=list)
 
 
@@ -134,9 +149,25 @@ class ProjectionOutput:
         return matches[-1]
 
 
-def run_projection(scenario: Scenario, terminal_age: int | None = None) -> ProjectionOutput:
+def run_projection(
+    scenario: Scenario,
+    terminal_age: int | None = None,
+    retirement_date: date | None = None,
+    spending_schedule: SpendingSchedule | None = None,
+    return_haircut: Decimal = Decimal("0"),
+) -> ProjectionOutput:
+    """`retirement_date` and `spending_schedule` let the Phase 2 solvers (woa_solver.py,
+    sas_solver.py) and the Phase 3 comparison engine evaluate a candidate retirement
+    date or candidate spending level without mutating the household's own planned
+    retirement date or the Section 4.9 anchored spending schedule. `return_haircut` is
+    the Section 6.1 stress-test mechanism (see models.Scenario.stress_return_haircut
+    and retirement_tests.stress_test for why it is relative to the scenario's own
+    return rather than an absolute floor); it is subtracted, floored at zero, from
+    every non-cash account's return for the whole horizon, since the engine does not
+    yet model separate pre/post-retirement return regimes (Section 7.3 -- deferred,
+    see delivery-plan.md)."""
     household = scenario.household
-    retirement_date = household.retirement_date
+    retirement_date = retirement_date if retirement_date is not None else household.retirement_date
     horizon_age = terminal_age if terminal_age is not None else household.retirement_horizon_age
     terminal_date = add_months(household.current_date, (horizon_age - household.current_age) * 12)
 
@@ -147,6 +178,14 @@ def run_projection(scenario: Scenario, terminal_age: int | None = None) -> Proje
         resolved = step.event.resolve_date(retirement_date)
         event_by_month.setdefault(date(resolved.year, resolved.month, 1), []).append(step)
 
+    decisions_by_month: dict[date, list] = {}
+    for decision in household.decisions:
+        key = date(decision.effective_date.year, decision.effective_date.month, 1)
+        decisions_by_month.setdefault(key, []).append(decision)
+    recurring_spending_adjustments = [
+        d for d in household.decisions if d.decision_type is DecisionType.SPENDING_ADJUSTMENT
+    ]
+
     mortgage = household.liabilities["primary_mortgage"]
     mortgage_payoff = None
     if mortgage.opening_balance > 0 and mortgage.payoff_boundary_date is not None:
@@ -155,7 +194,12 @@ def run_projection(scenario: Scenario, terminal_age: int | None = None) -> Proje
         )
 
     monthly_rates = {
-        name: acc.annual_return.value / 12 for name, acc in household.accounts.items()
+        name: max(
+            acc.annual_return.value - (return_haircut if acc.tax_treatment != "cash" else Decimal("0")),
+            Decimal("0"),
+        )
+        / 12
+        for name, acc in household.accounts.items()
     }
     balances = {name: acc.opening_balance for name, acc in household.accounts.items()}
     mortgage_balance = mortgage.opening_balance
@@ -177,7 +221,11 @@ def run_projection(scenario: Scenario, terminal_age: int | None = None) -> Proje
     salary_stream = next(s for s in household.income_streams if s.name == "Salary")
     bonus_stream = next(s for s in household.income_streams if s.name == "Annual bonus")
 
-    spending_schedule = build_schedule(retirement_date.year, scenario.retirement_inflation_rate)
+    if spending_schedule is None:
+        spending_schedule = build_schedule(
+            household.expense_categories, retirement_date.year, scenario.retirement_inflation_rate
+        )
+    essential_frac = essential_fraction(household.expense_categories)
 
     periods: list[PeriodResult] = []
     month_index = 0
@@ -235,13 +283,43 @@ def run_projection(scenario: Scenario, terminal_age: int | None = None) -> Proje
                 )
             )
 
+        # Decisions (Section 11/28): real-estate purchase/sale/Roth-conversion apply at
+        # their effective month, same event-by-month mechanism as liquidity events above.
+        conversion_tax = Decimal("0")
+        for decision in decisions_by_month.get(month_key, []):
+            if decision.decision_type is DecisionType.REAL_ESTATE_PURCHASE:
+                balances[decision.funding_source] -= decision.amount
+                additional_property_value += decision.amount
+            elif decision.decision_type is DecisionType.REAL_ESTATE_SALE:
+                proceeds = decision.amount if decision.amount > 0 else re_values[decision.description]
+                re_values[decision.description] = Decimal("0")
+                balances[decision.funding_source] += proceeds
+            elif decision.decision_type is DecisionType.ROTH_CONVERSION:
+                gross = min(decision.amount, balances["401k"])
+                tax = gross * TAX_DEFERRED_DISTRIBUTION_TAX_RATE.value
+                balances["401k"] -= gross
+                balances["roth"] += gross
+                balances[decision.funding_source] -= tax
+                conversion_tax += tax
+                if age >= scenario.rmd_age:
+                    warnings.append(
+                        f"Roth conversion executed at age {age}, at/after the configured RMD "
+                        f"age ({scenario.rmd_age}); Section 7.5 scopes conversions to between "
+                        "retirement and required minimum distributions"
+                    )
+
         # Consumption residual (Section 4.10): applies to salary/bonus only, never to
         # liquidity-event proceeds, which follow their allocation rules exclusively.
+        distribution_tax = Decimal("0")
         if not is_retired:
             implied_spending = gross_income - estimated_taxes - contributions_401k - debt_service
         else:
-            monthly_target = spending_schedule.spending_in_year(current.year) / 12
-            actual_spending = _withdraw_for_spending(balances, monthly_target, warnings)
+            base_target = spending_schedule.spending_in_year(current.year) / 12
+            monthly_target = _guardrail_adjusted_target(scenario, base_target, essential_frac)
+            monthly_target += _spending_adjustment(recurring_spending_adjustments, current) / 12
+            actual_spending, distribution_tax = _withdraw_for_spending(
+                scenario, balances, re_values, monthly_target, warnings
+            )
 
         # 6. Investment returns and tax drag (tax drag on taxable/401k defaults to zero
         # per Section 4.6/22 pending user configuration)
@@ -281,6 +359,8 @@ def run_projection(scenario: Scenario, terminal_age: int | None = None) -> Proje
                 investable_assets=inv_assets,
                 concentration_vs_net_worth=concentration_risk_index(equity_value, nw),
                 concentration_vs_investable=concentration_risk_index(equity_value, inv_assets),
+                distribution_tax=distribution_tax,
+                conversion_tax=conversion_tax,
                 warnings=warnings,
             )
         )
@@ -291,31 +371,157 @@ def run_projection(scenario: Scenario, terminal_age: int | None = None) -> Proje
     return ProjectionOutput(scenario_name=scenario.name, periods=periods)
 
 
-def _withdraw_for_spending(
-    balances: dict[str, Decimal], monthly_target: Decimal, warnings: list[str]
-) -> Decimal:
-    """Sequential withdrawal order: cash, taxable, tax-deferred (Section 7.5 default
-    order; Roth/real-estate sale not modeled in Phase 1 baseline). Tax-deferred
-    withdrawals are grossed up by the distribution tax placeholder so the household
-    still nets the target spending amount after tax."""
-    remaining = monthly_target
-    for account_name in ("cash", "taxable"):
-        available = balances[account_name]
-        draw = min(available, remaining)
-        balances[account_name] -= draw
-        remaining -= draw
-        if remaining <= 0:
-            return monthly_target
+def _spending_adjustment(decisions: list, current: date) -> Decimal:
+    """Sum of active SPENDING_ADJUSTMENT decisions' annual `amount` at `current`: a
+    recurring decision applies from its effective date onward, a one-time decision
+    only in its effective year (e.g. a single large discretionary purchase)."""
+    total = Decimal("0")
+    for decision in decisions:
+        if decision.effective_date <= current and (
+            decision.recurring_effect or decision.effective_date.year == current.year
+        ):
+            total += decision.amount
+    return total
 
-    if remaining > 0:
-        gross_needed = remaining / (1 - TAX_DEFERRED_DISTRIBUTION_TAX_RATE.value)
-        available = balances["401k"]
-        draw = min(available, gross_needed)
-        balances["401k"] -= draw
-        net_from_401k = draw * (1 - TAX_DEFERRED_DISTRIBUTION_TAX_RATE.value)
-        remaining -= net_from_401k
-        if remaining > 0:
-            warnings.append(
-                f"portfolio depleted; unable to fund {remaining} of monthly spending target"
-            )
-    return monthly_target - max(remaining, Decimal("0"))
+
+def _guardrail_adjusted_target(scenario: Scenario, base_target: Decimal, essential_frac: Decimal) -> Decimal:
+    """Section 7.5 spending guardrails: `"full_budget"` (default) spends the anchored
+    schedule as-is; `"essential_only"` floors spending at just the essential share;
+    `"discretionary_cuts"` keeps essential spending in full and cuts
+    `Scenario.discretionary_cut_fraction` of the discretionary share."""
+    if scenario.spending_guardrail == "essential_only":
+        return base_target * essential_frac
+    if scenario.spending_guardrail == "discretionary_cuts":
+        discretionary_frac = 1 - essential_frac
+        surviving_discretionary = discretionary_frac * (1 - scenario.discretionary_cut_fraction)
+        return base_target * (essential_frac + surviving_discretionary)
+    return base_target
+
+
+def _account_withdrawal_tax_rate(account) -> Decimal:
+    """Tax-deferred (401(k)) withdrawals are grossed up by the distribution-tax
+    placeholder; Roth withdrawals are tax-free (qualified-withdrawal mechanics, not a
+    simplification); cash/taxable withdrawals stay untaxed at the point of withdrawal,
+    an existing Phase 1 simplification (capital-gains tax on taxable draws is Section
+    7.5's deferred "capital-gain realization limits," not implemented -- see
+    delivery-plan.md)."""
+    if account.tax_treatment == "tax_deferred":
+        return TAX_DEFERRED_DISTRIBUTION_TAX_RATE.value
+    return Decimal("0")
+
+
+def _draw_sequential(household, balances: dict[str, Decimal], order: list[str], monthly_target: Decimal):
+    remaining = monthly_target
+    distribution_tax = Decimal("0")
+    for name in order:
+        if remaining <= 0:
+            break
+        account = household.accounts[name]
+        rate = _account_withdrawal_tax_rate(account)
+        available = balances[name]
+        if rate > 0:
+            gross_needed = remaining / (1 - rate)
+            draw = min(available, gross_needed)
+            net = draw * (1 - rate)
+            distribution_tax += draw - net
+        else:
+            draw = min(available, remaining)
+            net = draw
+        balances[name] -= draw
+        remaining -= net
+    return remaining, distribution_tax
+
+
+def _draw_proportional(household, balances: dict[str, Decimal], order: list[str], monthly_target: Decimal):
+    """Draws a share of the remaining need from every account with a positive balance,
+    weighted by each account's current balance (Section 7.5: "Allow proportional
+    withdrawals across accounts"). An account whose weighted share would exceed its
+    balance is drained fully instead and the shortfall is redistributed among the
+    remaining accounts in the next round."""
+    remaining = monthly_target
+    distribution_tax = Decimal("0")
+    active = [name for name in order if balances[name] > 0]
+    while remaining > CENT and active:
+        total_balance = sum(balances[name] for name in active)
+        if total_balance <= 0:
+            break
+        exhausted = []
+        draws = {}
+        for name in active:
+            account = household.accounts[name]
+            rate = _account_withdrawal_tax_rate(account)
+            weight = balances[name] / total_balance
+            target_net_share = remaining * weight
+            gross_needed = target_net_share / (1 - rate) if rate > 0 else target_net_share
+            if gross_needed >= balances[name]:
+                draws[name] = balances[name]
+                exhausted.append(name)
+            else:
+                draws[name] = gross_needed
+        net_covered = Decimal("0")
+        for name in active:
+            account = household.accounts[name]
+            rate = _account_withdrawal_tax_rate(account)
+            draw = draws[name]
+            balances[name] -= draw
+            net = draw * (1 - rate) if rate > 0 else draw
+            distribution_tax += draw - net
+            net_covered += net
+        remaining -= net_covered
+        if not exhausted:
+            break
+        active = [name for name in active if name not in exhausted]
+    return remaining, distribution_tax
+
+
+def _liquidate_real_estate_last_resort(
+    scenario: Scenario, balances: dict[str, Decimal], re_values: dict[str, Decimal], remaining: Decimal
+) -> Decimal:
+    """Section 7.5 lists "real estate" as the last resort in the withdrawal order, but
+    its own closing line requires this be opt-in, not automatic
+    (`Scenario.allow_real_estate_liquidation_as_last_resort`, default `False`) -- see
+    `models.Scenario`'s docstring. Liquidates the configured property in full (matching
+    `DecisionType.REAL_ESTATE_SALE`'s mechanics) and returns any surplus over the
+    shortfall to cash."""
+    property_name = scenario.real_estate_last_resort_property
+    available = re_values.get(property_name, Decimal("0"))
+    if available <= 0:
+        return remaining
+    re_values[property_name] = Decimal("0")
+    if available >= remaining:
+        balances["cash"] += available - remaining
+        return Decimal("0")
+    return remaining - available
+
+
+def _withdraw_for_spending(
+    scenario: Scenario,
+    balances: dict[str, Decimal],
+    re_values: dict[str, Decimal],
+    monthly_target: Decimal,
+    warnings: list[str],
+) -> tuple[Decimal, Decimal]:
+    """Withdraws `monthly_target` from the accounts named in `scenario.withdrawal_order`
+    (Section 7.5), sequentially or proportionally per `scenario.withdrawal_strategy`,
+    falling back to `scenario.real_estate_last_resort_property` if still short and that
+    fallback is enabled. Returns (actual_spending, distribution_tax) -- the latter is
+    the tax withheld on any tax-deferred draw, needed for the Phase 3 cumulative
+    tax-impact comparison (Section 8.2)."""
+    household = scenario.household
+    order = [name for name in scenario.withdrawal_order if name in balances]
+    if scenario.withdrawal_strategy == "proportional":
+        remaining, distribution_tax = _draw_proportional(household, balances, order, monthly_target)
+    else:
+        remaining, distribution_tax = _draw_sequential(household, balances, order, monthly_target)
+
+    if remaining > CENT and scenario.allow_real_estate_liquidation_as_last_resort:
+        remaining = _liquidate_real_estate_last_resort(scenario, balances, re_values, remaining)
+
+    # A shortfall below one cent is Decimal rounding noise from ~28-digit context
+    # precision compounding over decades of monthly operations, not a real spending
+    # failure -- the engine's own reporting convention (money.py) is cents anyway.
+    if remaining > CENT:
+        warnings.append(f"portfolio depleted; unable to fund {remaining} of monthly spending target")
+    elif remaining > 0:
+        remaining = Decimal("0")
+    return monthly_target - max(remaining, Decimal("0")), distribution_tax
